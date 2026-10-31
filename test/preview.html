@@ -1,0 +1,32 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Irry cards preview</title>
+<style>
+  :root{--primary-color:#03a9f4;--divider-color:#ddd;--secondary-text-color:#666;--primary-text-color:#222;--error-color:#c62828}
+  body{font-family:system-ui;background:#f4f4f4;margin:16px;max-width:640px} ha-card{display:block;background:#fff;border-radius:12px;margin:12px 0;padding-top:8px}
+  #log{font:12px monospace;white-space:pre-wrap}
+</style>
+<script>var module = { exports: {} };</script>
+<script src="fake.cjs"></script>
+<script>window.fakeHass = module.exports.fakeHass; module = { exports: {} };</script>
+<script src="../dist/irry-the-seven.js"></script>
+</head><body>
+<div id="cards"></div><div id="log"></div>
+<script>
+  // ha-card stand-in: shows its header like HA does.
+  customElements.define('ha-card', class extends HTMLElement {
+    connectedCallback() { const h = this.getAttribute('header'); if (h && !this.querySelector('h1')) this.insertAdjacentHTML('afterbegin', `<h1 style="font-size:20px;margin:8px 16px">${h}</h1>`); }
+  });
+  const hass = fakeHass({ lang: new URLSearchParams(location.search).get('lang') || 'it' });
+  hass.fail = new URLSearchParams(location.search).get('fail');
+  const log = () => { document.getElementById('log').textContent = JSON.stringify(hass.calls, null, 1); };
+  const orig = hass.callService.bind(hass);
+  hass.callService = (...a) => { const p = orig(...a); log(); return p; };
+  for (const [tag, cfg] of [['irry-rapid-card', {}], ['irry-slot-card', { zone: 2 }]]) {
+    const c = document.createElement(tag);
+    c.setConfig(cfg);
+    document.getElementById('cards').append(c);
+    c.hass = hass;
+  }
+</script>
+</body></html>
