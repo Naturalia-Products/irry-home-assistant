@@ -142,6 +142,7 @@ function refs(o, out = []) {
   D = lib.dayModel(Z, 0, td, jr.r, jy.r);
   ok(D.real && L(D) === '3:00:00-00:20th 1:06:00-06:10h 2:06:10-06:10h 3:23:50-00:00', `day 0 with history: ${L(D)}`);
   ok(D.rows[2].bars.some((b) => b.tl && b.c === 0) && D.rows[0].bars[0].c === 1, 'history colours: slot 1, by hand');
+  ok(D.rows[0].bars[0].h === 1 && D.rows[2].bars.some((b) => !b.h && !b.tl), 'history bars flagged, plan bars not');
   ok(lib.dayModel(Z, -1, td, jy.r, null).list.length === 1 && lib.dayModel(Z, -5, td, null, null).none, 'past days');
   ok(lib.getCall(lib.irryModel({ ...hd, services: { esphome: {} } }), 'notes') === null, 'no get service');
   // Ecowitt raw fields: groups, piezo label, battery names, sea-level pressure from the device, unknown fields.
@@ -154,6 +155,18 @@ function refs(o, out = []) {
   ok(gr[t('m_psl')] === '1013,2 hPa' && gr[`${t('es_sm')} CH2`] === '41 %' && gr.foo === '1' && !gr.PASSKEY, `eco rows ${JSON.stringify(gr)}`);
   ok(gr[t('m_t')] === '18,0 °C' && gr[`${t('es_rd')} · piezo`] === '5,1 mm' && gb[t('m_batt')] === t('m_batt_ok')
     && gb[`${t('es_sm')} CH2`] === '1,40 V', JSON.stringify(gb));
+  // Only the extras: a field whose entity has a value is left out; 16-point direction with degrees; UV with no unit.
+  const G2 = lib.ecoGroups(ce, { tempf: '64.4', baromrelin: '29.9', drain_piezo: '0.2', winddir: '200', uv: '3' }, '1013,2 hPa',
+    (k) => k === 'weather_temperature' || k === 'weather_pressure_sea_level');
+  const g2 = Object.fromEntries(G2.flatMap((x) => x.rows));
+  ok(!g2[t('m_t')] && !g2[t('m_psl')] && g2[`${t('es_rd')} · piezo`] === '5,1 mm' && g2[t('w_dir')] === `${t('x_wd_ssw')} · 200°`
+    && g2[t('es_uv')] === '3', `eco extras ${JSON.stringify(g2)}`);
+  // Status: firmware version row, uptime as a duration, value / threshold pairs; x8: Find note for the LED only.
+  const js = JSON.stringify(await reg['ll-strategy-view-irry-status'].generate({}, fakeHass()));
+  ok(js.includes('"value":"2.5.0"') && js.includes('irry-events-card') && !js.includes('"logbook"'), 'status: version row, events card');
+  ok(lib.fmtState('dur', { state: '5530', attributes: {} }, c) === `1 ${t('h')} 32 ${t('min')}`, `uptime ${lib.fmtState('dur', { state: '5530', attributes: {} }, c)}`);
+  ok(JSON.stringify(await reg['ll-strategy-view-irry-settings'].generate({}, h8)).includes(t('x_find_led'))
+    && JSON.stringify(await reg['ll-strategy-view-irry-settings'].generate({}, fakeHass())).includes(t('find_ok')), 'Find note ws / x8');
   // No empty section or card in any view, on ws and x8.
   for (const hh of [fakeHass(), h8]) for (const k of ['status', 'irrigation', 'day', 'weather', 'settings']) {
     const vv = await reg[`ll-strategy-view-irry-${k}`].generate({}, hh);
@@ -163,9 +176,11 @@ function refs(o, out = []) {
   const el = () => ({ addEventListener() {}, dataset: {}, value: '' });
   global.setInterval = () => 0; global.clearInterval = () => {};
   const hc = fakeHass(), tdc = lib.devToday(hc);
-  hc.getData = { hist: { d: tdc.dn, o: tdc.dn - 3, x: 0, r: [[360, 600, 1, 1, 7, 0]] }, ecoraw: { age: 12, f: { tempc: '18', humidity: '50', windspeedkmh: '5' } },
+  hc.getData = { hist: { d: tdc.dn, o: tdc.dn - 3, x: 0, r: [[360, 600, 1, 1, 7, 0]] }, ecoraw: { age: 12, f: { tempc: '18', humidity: '50', windspeedkmh: '5', dewpointc: '9' } },
     mhist: { p: 1, rs: 86400, r0: (tdc.dn - 6) * 86400, rn: [0, 1.2, 0, 0, 3.4, 0, 0.2] }, notes: { run: 0, v: '2.4.1', url: 'https://example.com/n' } };
-  for (const [name, cls] of [['day', lib.IrryDayCard], ['eco', lib.IrryEcoCard], ['coef', lib.IrryCoefCard], ['cal', lib.IrryCalCard], ['notes', lib.IrryNotesCard]]) {
+  const evId = lib.irryModel(hc).E('last_event'), nowS = Date.now() / 1000;
+  hc.history = { [evId]: [{ s: 'Set slot Z1 S2', lu: nowS - 7200 }, { s: 'Rapid S1: 3 zones', lu: nowS - 60 }] };
+  for (const [name, cls] of [['events', lib.IrryEventsCard], ['day', lib.IrryDayCard], ['eco', lib.IrryEcoCard], ['coef', lib.IrryCoefCard], ['cal', lib.IrryCalCard], ['notes', lib.IrryNotesCard]]) {
     const card = new cls(); let html = '';
     card.style = {}; card.dispatchEvent = () => {};
     card.attachShadow = () => { card.shadowRoot = { activeElement: null, set innerHTML(v) { html = v; }, get innerHTML() { return html; },
@@ -176,7 +191,8 @@ function refs(o, out = []) {
       card.hass = hc;
       ok(html.length > 0 || name === 'cal', `${name} card painted`);
       if (name === 'day') ok(html.includes(t('h_o7')) && html.includes('nowl') && html.includes('tlt'), 'day card: badge, now-line, timeline');
-      if (name === 'coef') ok(html.includes(t('m_hist')) && html.includes('3,4'), 'coef card: rain of the last days');
+      if (name === 'coef') ok(html.includes(t('m_hist')) && html.includes('3,4') && html.includes(t('x_all_zones')), 'coef card: rain of the last days, all zones');
+      if (name === 'events') ok(html.includes(lib.eventText(lib.irryModel(hc), t, 'it', 'Set slot Z1 S2')) && !html.includes('Rapid S1'), `events card ${html.replace(/<style>[^]*<\/style>/, "")}`);
       if (name === 'notes') ok(html.includes('https://example.com/n'), 'notes card: link');
       if (name === 'eco') ok(html.includes(t('es_g_out')) && html.includes('12 s'), 'eco card: groups and age');
     } catch (e) { ok(false, `${name} card: ${e.stack}`); }

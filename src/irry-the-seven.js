@@ -12,7 +12,7 @@
 // Units: the device "Units" select (Auto = from the time zone), as in the device UI; HA sensor values
 // are converted from whatever unit HA shows them in. Graphs keep the HA unit.
 
-const IRRY_VERSION = '0.3.1';
+const IRRY_VERSION = '0.3.2';
 const I18N = /*I18N*/ {} /*END*/;
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -123,7 +123,7 @@ function irryModel(hass, want) {
     const mine = m6 ? all.filter((s) => s.includes(m6)) : [];
     return mine[0] || (all.length === 1 ? all[0] : null);
   };
-  return { dev, E, so, st, zones, label, imp, action };
+  return { h: hass, dev, E, so, st, zones, label, imp, action };
 }
 
 // ---------------------------------------------------------------- values in the device words and units
@@ -175,7 +175,13 @@ const dateText = (l, y, mo, d) => new Intl.DateTimeFormat(l, { weekday: 'short',
 // Same helpers as the device UI: minutes -> HH:MM, a duration in minutes, an age in seconds.
 const hm = (x) => { x = ((x % 1440) + 1440) % 1440; return `${String(Math.floor(x / 60)).padStart(2, '0')}:${String(x % 60).padStart(2, '0')}`; };
 const fmin = (t, x) => (x < 60 ? `${x} ${t('min')}` : `${Math.floor(x / 60)} ${t('h')}${x % 60 ? ` ${x % 60} ${t('min')}` : ''}`);
-const ago = (s) => (s == null ? '-' : s < 90 ? `${s} s` : s < 5400 ? `${Math.round(s / 60)} min` : s < 172800 ? `${Math.round(s / 3600)} h` : `${Math.round(s / 86400)} d`);
+const ago = (s, t) => (s == null ? '-' : s < 90 ? `${s} s` : s < 5400 ? `${Math.round(s / 60)} min` : s < 172800 ? `${Math.round(s / 3600)} h`
+  : `${Math.round(s / 86400)} ${t ? t('x_d') : 'd'}`);
+// Duration in seconds as "1 h 32 min" or "3 d 4 h" (uptime).
+const fdur = (t, s) => (s < 3600 ? `${Math.floor(s / 60)} ${t('min')}` : s < 86400 ? `${Math.floor(s / 3600)} ${t('h')} ${Math.floor((s % 3600) / 60)} ${t('min')}`
+  : `${Math.floor(s / 86400)} ${t('x_d')} ${Math.floor((s % 86400) / 3600)} ${t('h')}`);
+// Absolute time and, in brackets, how long ago.
+const tsAgo = (iso, c) => { const d = new Date(iso); return isNaN(d) ? '-' : `${fmtTime(iso, c)} (${ago(Math.max(0, Math.round((Date.now() - d) / 1000)), c.t)})`; };
 
 // ---------------------------------------------------------------- device days (as the device UI and it7::runs_on)
 // Day number = days since 1970-01-01 (local date written as UTC); weekday index (Mon = 0) = (dn + 3) % 7.
@@ -228,7 +234,7 @@ const hsk = (o) => o >= 8 && o !== 11;
 // History outcome texts by out (2-12); 0 = open, 1 = program end have none.
 const HOUT = [, , K('h_o2'), K('h_o3'), K('h_o4'), K('h_o5'), K('h_o6'), K('h_o7'), K('h_o8'), K('h_o9'), K('h_o10'), K('h_o11'), K('h_o12')];
 // Day model, as the device Day tab: g = days from today, td = devToday(), hr / hy = history rows of the day and of
-// the day before (null: not loaded or in the future). Bars { a, b, c (1-3 slot, 0 by hand), tl (tail), past },
+// the day before (null: not loaded or in the future). Bars { a, b, c (1-3 slot, 0 by hand), tl (tail), past, h (history) },
 // list items { a, b, zi, k (slot index) | h (history row), tl }, overlap windows, nm = minute of now (-1 future, 1440 past).
 function dayModel(Z, g, td, hr, hy) {
   const dn = td.dn + g, nm = g < 0 ? 1440 : g ? -1 : td.m, real = !!hr, list = [];
@@ -236,23 +242,23 @@ function dayModel(Z, g, td, hr, hy) {
   const open = (z, k) => [...(hr || []), ...(hy || [])].some((x) => x[2] === z && x[3] === k + 1 && !x[4]);
   const rows = Z.map((zn, zi) => {
     const bars = [];
-    const bar = (a, b, c, tl) => {  // past part hatched
+    const bar = (a, b, c, tl, h) => {  // h: from the history (done); a plan bar is split at now
       const x = Math.max(a, Math.min(b, nm));
-      if (x > a) bars.push({ a, b: x, c, tl, past: 1 });
-      if (b > x) bars.push({ a: x, b, c, tl, past: 0 });
+      if (x > a) bars.push({ a, b: x, c, tl, past: 1, h });
+      if (b > x) bars.push({ a: x, b, c, tl, past: 0, h });
     };
     if (real) {
       hr.forEach((x) => {
         if (x[2] !== zn.z) return;
         if (hsk(x[4])) { list.push({ a: x[0], b: x[0], zi, h: x }); return; }
         const e = Math.min(x[0] + x[1] / 60, 1440);
-        bar(x[0], e, col(x), 0);
+        bar(x[0], e, col(x), 0, 1);
         list.push({ a: x[0], b: e, zi, h: x });
       });
       (hy || []).forEach((x) => {
         const e = x[0] + x[1] / 60 - 1440;
         if (x[2] !== zn.z || hsk(x[4]) || e <= 0) return;
-        bar(0, e, col(x), 1);
+        bar(0, e, col(x), 1, 1);
         list.push({ a: 0, b: e, zi, h: x, tl: 1 });
       });
     }
@@ -343,6 +349,17 @@ function fmtState(f, s, c, row = {}) {
     case 'batt': return t(v === 'on' ? K('m_batt_low') : K('m_batt_ok'));
     case 'zact': return BAD.includes(v) || v === '-' ? t('m_none') : v;
     case 'ts': return BAD.includes(v) ? '-' : fmtTime(v, c);
+    case 'tsago': return BAD.includes(v) ? '-' : tsAgo(v, c);
+    case 'dur': { const x = parseFloat(v); return isNaN(x) ? '-' : fdur(t, x); }
+    case 'num': { const x = parseFloat(v); return isNaN(x) ? '-' : nf(x, x % 1 ? 1 : 0, c.l); }  // a value with no unit (UV index)
+    case 'open': return t(v === 'on' ? K('x_open') : K('x_closed'));
+    case 'pair': {  // value / threshold (row.ref), one unit when both share it
+      const r2 = row.ref && c.h.states[row.ref];
+      if (BAD.includes(v) || !r2) return fmtState('', s, c);
+      const a = devValue(parseFloat(v), s.attributes.unit_of_measurement, m.imp), b = devValue(parseFloat(r2.state), r2.attributes.unit_of_measurement, m.imp);
+      if (a && b && a[1] === b[1]) return `${nf(a[0], a[2], c.l)} / ${nf(b[0], b[2], c.l)} ${a[1]}`;
+      return `${fmtState('', s, c)} / ${fmtState('', r2, c)}`;
+    }
     case 'next': {
       const p = row.ref && c.h.states[row.ref];
       if (p && p.state === 'on') return t('paused');
@@ -383,10 +400,11 @@ const noDevice = (t) => ({
 const press = (entity, x = {}) => ({ action: 'perform-action', perform_action: 'button.press', target: { entity_id: entity }, ...x });
 // Rows card: name in the device words, value translated and in the device units (edit: writable control).
 // Rows of entities the device does not have are dropped, and so is a heading with no row after it.
-// { note } is a text line; only: { k, state } shows the row while that entity has that state (no state: while it exists).
+// { note } is a text line, { name, value } a fixed value; only: { k, state } shows the row while that entity has that state
+// (a list: one of them; no state: while it exists).
 function rows(m, list, x = {}) {
-  const r = list.filter((e) => e && (!e.only || m.E(e.only.k)) && (e.head || e.note || m.E(e.k))).map((e) => {
-    const o = e.head || e.note ? { ...e } : { ...e, entity: m.E(e.k) };
+  const r = list.filter((e) => e && (!e.only || m.E(e.only.k)) && (e.head || e.note || e.value || m.E(e.k))).map((e) => {
+    const o = e.head || e.note || e.value ? { ...e } : { ...e, entity: m.E(e.k) };
     if (o.only) o.only = o.only.state === undefined ? undefined : { entity: m.E(e.only.k), state: e.only.state };
     delete o.k;
     for (const k of Object.keys(o)) if (o[k] === undefined) delete o[k];
@@ -399,11 +417,12 @@ function rows(m, list, x = {}) {
 function statusView(m, t) {
   const E = m.E, has = (k) => !!E(k);
   const auxName = m.st('aux_label');
+  // Installed firmware: HA ESPHome writes sw_version as "<project version> (ESPHome <version>)".
+  const ver = String(m.dev.sw_version || '').split(' ')[0];
   const zt = m.zones.flatMap((n) => [
     tile(E(`zone_${n}_manual`), { name: m.label(n), icon: 'mdi:sprinkler-variant', tap_action: toggle }),
     has(`zone_${n}_end`) && tile(E(`zone_${n}_end`), { name: `${m.label(n)} · ${t('x_end')}`, visibility: shown(E(`zone_${n}_end`)) }),
   ]);
-  const ids = (ks) => ks.map(E).filter(Boolean);
   return {
     type: 'sections', max_columns: 4,
     sections: [
@@ -418,41 +437,35 @@ function statusView(m, t) {
         has('valve_power') && tile(E('valve_power'), { name: t('vp') }),
         has('programs_paused') && tile(E('programs_paused'), { name: t('pause'), tap_action: toggle }),
         has('close_all_zone_valves') && tile(E('close_all_zone_valves'), {
-          name: t('close_all'), icon: 'mdi:water-off', color: 'red',
+          name: t('close_all'), icon: 'mdi:water-off', color: 'red', hide_state: true,
           tap_action: press(E('close_all_zone_valves'), { confirmation: { text: t('x_close_q') } }),
           ...(has('zone_active') ? { visibility: [{ condition: 'state', entity: E('zone_active'), state_not: ['-', ...BAD] }] } : {}),
         }),
         has('ignore_wind') && has('wind_pause') && tile(E('ignore_wind'), {
-          name: t('wind_ign'), icon: 'mdi:weather-windy', tap_action: press(E('ignore_wind')),
+          name: t('wind_ign'), icon: 'mdi:weather-windy', hide_state: true, tap_action: press(E('ignore_wind')),
           visibility: [{ condition: 'state', entity: E('wind_pause'), state_not: ['off', ...BAD] }],
         }),
         has('aux') && tile(E('aux'), { name: auxName && !BAD.includes(auxName) ? auxName : t('aux_def'), tap_action: toggle }),
-        has('find_device') && tile(E('find_device'), { name: t('find'), icon: 'mdi:map-marker-radius-outline', tap_action: press(E('find_device')) }),
+        // Buttons: no state line (HA would show the last press, or "Unknown").
+        has('find_device') && tile(E('find_device'), { name: t('find'), icon: 'mdi:map-marker-radius-outline', hide_state: true, tap_action: press(E('find_device')) }),
         // Waveshare only (x8 has no beeper); no entity tells whether an alarm sounds, so it is always shown.
-        has('silence_alarm') && tile(E('silence_alarm'), { name: t('silence'), icon: 'mdi:volume-off', tap_action: press(E('silence_alarm')) }),
+        has('silence_alarm') && tile(E('silence_alarm'), { name: t('silence'), icon: 'mdi:volume-off', hide_state: true, tap_action: press(E('silence_alarm')) }),
       ]),
       section([heading(t('zones'), 'mdi:map-marker-radius'), ...zt]),
-      section([
+      E('last_event') && section([
         heading(t('x_log'), 'mdi:history'),
-        rows(m, [{ k: 'last_event', name: t('x_last_ev'), fmt: 'event' }]),
-        { type: 'logbook', hours_to_show: 48, grid_options: { columns: 'full', rows: 6 },
-          target: { entity_id: ids(['last_event', 'zone_active', 'wind_pause', 'programs_paused', 'firmware_update_status']) } },
+        { type: 'custom:irry-events-card', device: m.dev.id, grid_options: { columns: 'full' } },
       ]),
+      // Rain and wind in one column: each value with its threshold on one row.
       section([
-        heading(t('rain'), 'mdi:weather-pouring'),
+        heading(`${t('rain')} · ${t('wind_h')}`, 'mdi:weather-windy'),
         rows(m, [
-          { k: 'rain_last_24h', name: t('m_r24') },
-          { k: 'rain_skip_threshold', name: t('rain_thr') },
+          { head: t('rain') },
+          { k: 'rain_last_24h', name: `${t('m_r24')} / ${t('rain_thr')}`, fmt: 'pair', ref: E('rain_skip_threshold') || undefined },
           { k: 'rain_skip_active', name: t('rain_skip'), fmt: 'yes' },
-        ]),
-      ]),
-      section([
-        heading(t('wind_h'), 'mdi:weather-windy'),
-        rows(m, [
-          { k: 'wind_mean_10_min', name: t('es_ws10') },
-          { k: 'wind_mean_threshold', name: t('w_thr_u') },
-          { k: 'weather_wind_gust', name: t('w_gust') },
-          { k: 'wind_gust_threshold', name: t('w_thr_g') },
+          { head: t('wind_h') },
+          { k: 'wind_mean_10_min', name: `${t('es_ws10')} / ${t('rain_thr')}`, fmt: 'pair', ref: E('wind_mean_threshold') || undefined },
+          { k: 'weather_wind_gust', name: `${t('w_gust')} / ${t('rain_thr')}`, fmt: 'pair', ref: E('wind_gust_threshold') || undefined },
           { k: 'wind_over_threshold', name: t('x_wind_over'), fmt: 'yes' },
           { k: 'wind_pause', name: t('wp'), fmt: 'wpause' },
         ]),
@@ -470,6 +483,7 @@ function statusView(m, t) {
         heading(t('x_diag'), 'mdi:information-outline'),
         rows(m, [
           { head: t('fw') },
+          ver && { name: t('fw_cur'), value: ver },
           { k: 'firmware_update_status', name: t('fwn'), fmt: 'fw' },
           { k: 'firmware_update_mode', name: t('x_fwm'), fmt: 'fwm' },
           { k: 'firmware_source', name: t('x_fwsrc') },
@@ -480,13 +494,13 @@ function statusView(m, t) {
           { k: 'wi_fi_network', name: t('wifi'), fmt: 'wifi' },
           { k: 'wi_fi_signal', name: t('signal') },
           { k: 'ip_address', name: t('ip') },
-          { k: 'uptime', name: t('uptime') },
+          { k: 'uptime', name: t('uptime'), fmt: 'dur' },
           { head: t('x_station') },
           { k: 'weather_feed', name: t('x_station'), fmt: 'feed' },
-          { k: 'weather_last_update', name: t('m_eco_rx'), fmt: 'ts' },
+          { k: 'weather_last_update', name: t('m_eco_rx'), fmt: 'tsago' },
         ]),
       ]),
-    ],
+    ].filter(Boolean),
   };
 }
 
@@ -494,9 +508,11 @@ function irrigationView(m, t) {
   const E = m.E, has = (k) => !!E(k), dev = m.dev.id;
   const zone = (n) => section([
     heading(m.label(n), 'mdi:sprinkler-variant'),
-    tile(E(`zone_${n}_manual`), { name: t('z_man'), icon: 'mdi:sprinkler-variant', tap_action: toggle }),
     has(`zone_${n}_end`) && tile(E(`zone_${n}_end`), { name: t('x_end'), visibility: shown(E(`zone_${n}_end`)) }),
-    rows(m, [{ k: `zone_${n}_irrigation_factor`, name: t('x_zf') }]),
+    rows(m, [
+      { k: `zone_${n}_manual`, name: t('x_man_open'), fmt: 'open', edit: true },
+      { k: `zone_${n}_irrigation_factor`, name: t('x_zf') },
+    ]),
     { type: 'custom:irry-slot-card', device: dev, zone: n, grid_options: { columns: 'full' } },
   ]);
   return {
@@ -520,16 +536,37 @@ function dayView(m, t) {
   };
 }
 
+// 24-hour clock of the HA user (Profile → Time format), for mini-graph-card.
+function hour24(h) {
+  const f = h && h.locale && h.locale.time_format;
+  if (f === '24') return true;
+  if (f === '12') return false;
+  try {
+    const l = f === 'system' ? undefined : (h && h.locale && h.locale.language) || 'en';
+    const c = new Intl.DateTimeFormat(l, { hour: 'numeric' }).resolvedOptions().hourCycle;
+    return c === 'h23' || c === 'h24';
+  } catch (e) { return true; }
+}
+// Graph decimals of the HA unit, as the device units table (°C 1, km/h 1, hPa 1, inHg 2, mm 1, in 2; % and W/m² 0).
+function unitDec(m, k) {
+  const s = m.so(k), u = s && s.attributes.unit_of_measurement, x = UNIT[u];
+  if (!x) return 0;
+  const d = DEV[x[0]].find((e) => e[0] === u);
+  return d ? d[1] : DEV[x[0]][0][1];
+}
+
 function weatherView(m, t, opt = {}) {
   const E = m.E, has = (k) => !!E(k);
   const ce = typeof customElements !== 'undefined' ? customElements : { get: () => null };
   const ents = (ks) => ks.filter(([k]) => E(k)).map(([k, name]) => ({ entity: E(k), name }));
   const mini = !!ce.get('mini-graph-card') && opt.mini_graph !== false;
+  const h24 = hour24(m.h);
   const graph = (title, ks) => {
     const e = ents(ks);
     if (!e.length) return null;
     return mini
       ? { type: 'custom:mini-graph-card', name: title, hours_to_show: 24, points_per_hour: 6, line_width: 2, entities: e,
+        hour24: h24, decimals: unitDec(m, ks[0][0]),
         show: { legend: e.length > 1, average: true, extrema: true, labels: false, fill: false, points: false }, grid_options: { columns: 12 } }
       : { type: 'history-graph', title, hours_to_show: 24, entities: e, grid_options: { columns: 12 } };
   };
@@ -539,7 +576,7 @@ function weatherView(m, t, opt = {}) {
     type: 'custom:windrose-card', title: t('w_dir'), refresh_interval: 300, windspeed_bar_location: 'bottom',
     rose_config: { center_calm_percentage: true },
     direction_labels: { custom_labels: labels, show_cardinal_directions: true, show_intercardinal_directions: true,
-      show_secondary_intercardinal_directions: true },
+      show_secondary_intercardinal_directions: false },
     wind_direction_entity: { entity: E('weather_wind_direction'), use_statistics: false },
     windspeed_entities: [{ entity: E('weather_wind_speed'), name: t('w_spd'), speed_unit: 'auto', use_statistics: false,
       output_speed_unit: m.imp ? 'mph' : 'kph' }],
@@ -582,7 +619,7 @@ function weatherView(m, t, opt = {}) {
           { k: 'weather_wind_direction', name: t('w_dir'), fmt: 'dir' },
           { head: t('x_sun') },
           { k: 'weather_solar_radiation', name: t('m_rs') },
-          { k: 'weather_uv_index', name: t('es_uv') },
+          { k: 'weather_uv_index', name: t('es_uv'), fmt: 'num' },
           { head: t('es_g_in') },
           { k: 'weather_indoor_temperature', name: t('m_t') },
           { k: 'weather_indoor_humidity', name: t('m_rh') },
@@ -596,7 +633,7 @@ function weatherView(m, t, opt = {}) {
           { k: 'weather_lightning_count', name: t('es_ltn'), hide_empty: true },
           { head: t('x_station') },
           { k: 'weather_feed', name: t('x_station'), fmt: 'feed' },
-          { k: 'weather_last_update', name: t('m_eco_rx'), fmt: 'ts' },
+          { k: 'weather_last_update', name: t('m_eco_rx'), fmt: 'tsago' },
           { k: 'weather_battery', name: t('m_batt'), fmt: 'batt' },
         ]),
       ]),
@@ -617,8 +654,8 @@ function weatherView(m, t, opt = {}) {
       ]),
       section([
         heading(t('rain'), 'mdi:weather-pouring'),
-        graph(t('rain'), [['weather_rain_rate', t('es_rr')], ['rain_last_24h', t('m_r24')]]),
-        has('weather_rain_today') && { type: 'statistics-graph', title: t('wx_7'), entities: [{ entity: E('weather_rain_today'), name: t('es_rd') }],
+        graph(t('es_rr'), [['weather_rain_rate', t('es_rr')]]),
+        has('weather_rain_today') && { type: 'statistics-graph', title: t('wx_7'), entities: [{ entity: E('weather_rain_today'), name: t('x_rain_daily') }],
           stat_types: ['change'], period: 'day', days_to_show: 7, chart_type: 'bar', grid_options: { columns: 12 } },
       ]),
     ],
@@ -627,6 +664,9 @@ function weatherView(m, t, opt = {}) {
 
 function settingsView(m, t) {
   const E = m.E;
+  // Weather source as the device: Ecowitt when the feed is paired or pairable; the HA fields stay editable otherwise
+  // (HA has no source entity, so with no source they are the way to choose Home Assistant).
+  const ECO = ['unpaired', 'stale', 'ok'], NOECO = ['none', ...BAD];
   const zone = (n) => section([
     heading(m.label(n), 'mdi:sprinkler-variant'),
     rows(m, [
@@ -644,15 +684,16 @@ function settingsView(m, t) {
         heading(t('rain'), 'mdi:weather-pouring'),
         rows(m, [
           { k: 'rain_skip_threshold', name: t('rain_thr'), edit: true },
-          { k: 'rain_entity', name: t('rain_ent'), edit: true },
-          { k: 'rain_attribute', name: t('rain_attr'), edit: true },
+          { k: 'rain_entity', name: t('rain_ent'), edit: true, pick: 'sensor', pat: '^sensor\\.[a-z0-9_]+$', only: { k: 'weather_feed', state: NOECO } },
+          { k: 'rain_attribute', name: t('rain_attr'), edit: true, only: { k: 'weather_feed', state: NOECO } },
+          { note: t('m_rain_eco'), only: { k: 'weather_feed', state: ECO } },
         ]),
       ]),
       section([
         heading(t('wind_h'), 'mdi:weather-windy'),
         rows(m, [
-          { k: 'wind_mean_threshold', name: t('w_thr_u'), edit: true },
-          { k: 'wind_gust_threshold', name: t('w_thr_g'), edit: true },
+          { k: 'wind_mean_threshold', name: t('w_thr_u'), edit: true, int: true },
+          { k: 'wind_gust_threshold', name: t('w_thr_g'), edit: true, int: true },
         ]),
       ]),
       section([
@@ -660,7 +701,7 @@ function settingsView(m, t) {
         rows(m, [
           { k: 'weather_feed', name: t('x_wsrc'), fmt: 'wsrc', refs: [E('weather_prefix'), E('rain_entity')].filter(Boolean) },
           { k: 'irrigation_method', name: t('m_meth'), fmt: 'method' },
-          { k: 'weather_prefix', name: t('m_pfx'), edit: true },
+          { k: 'weather_prefix', name: t('m_pfx'), edit: true, pat: '^sensor\\.[a-z0-9_]+$', only: { k: 'weather_feed', state: NOECO } },
         ]),
         E('irrigation_reference_et0') && { type: 'custom:irry-cal-card', device: m.dev.id, grid_options: { columns: 'full' } },
         rows(m, [
@@ -699,7 +740,7 @@ function settingsView(m, t) {
           { k: 'firmware_update_mode', name: t('x_fwm'), fmt: 'fwm', edit: true },
           { k: 'firmware_check', name: t('fwn_check'), edit: true },
           { k: 'firmware_install', name: t('fwn_go'), fmt: 'fwgo', ref: E('firmware_update_status') || undefined, edit: true },
-          { k: 'firmware_last_check', name: t('fwn_last'), fmt: 'ts' },
+          { k: 'firmware_last_check', name: t('fwn_last'), fmt: 'tsago' },
         ]),
         m.action('get') && { type: 'custom:irry-notes-card', device: m.dev.id, grid_options: { columns: 'full' } },
         rows(m, [
@@ -708,7 +749,7 @@ function settingsView(m, t) {
           { k: 'rtc', name: t('rtc'), fmt: 'rtc' },
           { head: t('x_device') },
           { k: 'find_device', name: t('find_b'), edit: true },
-          { note: t('find_ok'), only: { k: 'find_device' } },
+          { note: t(E('alarm_sound') ? K('find_ok') : K('x_find_led')), only: { k: 'find_device' } },  // x8: LED only
           { k: 'restart', name: t('restart_b'), confirm: t('x_restart_q'), edit: true },
         ]),
       ]),
@@ -765,18 +806,24 @@ const CSS = `
   .wrap{padding:0 16px 16px} .row{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;margin:8px 0}
   .slot{border-top:1px solid var(--divider-color);padding-top:10px;margin-top:10px}
   .slot:first-child{border-top:0;margin-top:0}
-  .slot.off .body{opacity:.5}
-  .sh{display:flex;align-items:center;gap:8px} .sh .b{flex:1}
+  .sh{display:flex;align-items:center;gap:8px;cursor:pointer;min-height:32px} .sh .b{flex:1} .sh .sub{color:var(--secondary-text-color);font-weight:400}
+  .sh .cv{color:var(--secondary-text-color);transition:transform .15s} .slot.open .sh .cv{transform:rotate(90deg)}
+  .slot.off .sh .b{color:var(--secondary-text-color)} .est{font-size:13px;color:var(--secondary-text-color)}
   label{font-size:14px;color:var(--secondary-text-color);display:flex;gap:6px;align-items:center}
   input,select{font:inherit;color:var(--primary-text-color);background:var(--card-background-color,#fff);
     border:1px solid var(--divider-color);border-radius:6px;padding:4px 6px}
   input[type=number]{width:5em} .b{font-weight:500;color:var(--primary-text-color)}
   .days{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
-  button.day{width:34px;height:34px;border-radius:50%;padding:0;font-weight:500;background:rgba(127,127,127,.18);color:var(--primary-text-color)}
-  button.day.on{background:var(--blue-color,#2196f3);color:#fff}
-  button.day.all{width:auto;border-radius:17px;padding:0 12px}
+  button.day{width:34px;height:34px;border-radius:50%;padding:0;font-weight:500;background:none;
+    border:1px solid var(--divider-color);color:var(--secondary-text-color)}
+  button.day.on{background:var(--blue-color,#2196f3);border-color:transparent;color:#fff;font-weight:700}
+  button.day.all{width:auto;height:30px;border-radius:6px;padding:0 10px;margin-left:8px;align-self:center;font-size:13px;
+    border:1px dashed var(--divider-color);color:var(--primary-color);background:none;font-weight:500}
+  button.day.all.on{border-style:solid;border-color:var(--primary-color)}
   button{font:inherit;border:0;border-radius:6px;padding:6px 14px;cursor:pointer;background:var(--primary-color);color:var(--text-primary-color,#fff)}
   button.s{background:none;color:var(--primary-color);padding:2px 6px} button:disabled{opacity:.5;cursor:default}
+  button.up{width:28px;height:28px;padding:0;border-radius:50%;background:rgba(127,127,127,.18);color:var(--primary-text-color);font-size:12px}
+  button.up:disabled{visibility:hidden}
   .step{display:inline-flex;align-items:center;gap:6px}
   .step button{width:30px;height:30px;padding:0;border-radius:50%;background:rgba(127,127,127,.18);color:var(--primary-text-color)}
   .step span{min-width:3.2em;text-align:center;color:var(--primary-text-color)}
@@ -788,8 +835,9 @@ const CSS = `
   .z{display:flex;gap:6px;align-items:center;margin:2px 0}
   .rows{padding:4px 16px 8px} .r{display:flex;align-items:center;gap:12px;min-height:40px}
   .r + .r{border-top:1px solid var(--divider-color)}
-  .r .n{flex:1;color:var(--primary-text-color)} .r .v{color:var(--secondary-text-color);text-align:right}
-  .r.tap{cursor:pointer} .r input[type=text]{width:12em} .r select{max-width:16em}
+  .r .n{flex:1;color:var(--secondary-text-color)} .r .v{color:var(--primary-text-color);text-align:right}
+  .r.tap{cursor:pointer} .r input[type=text]{width:12em} .r select{max-width:16em} .r ha-selector{flex:0 1 18em;min-width:12em}
+  input.bad,input:invalid{border-color:var(--error-color)}
   .h{font-size:12px;font-weight:500;letter-spacing:.04em;text-transform:uppercase;color:var(--secondary-text-color);margin:14px 0 2px}
   .h:first-child{margin-top:6px}
   .note{font-size:13px;color:var(--secondary-text-color);margin:6px 0;line-height:1.4}
@@ -907,8 +955,8 @@ class IrryRowsCard extends IrryCard {
     if (!this._m) return this.noDev();
     const avail = (row) => ((h.states[row.ref] || {}).state || '').match(/^(\S+) available/);
     const list = (this._c.rows || []).map((row, i) => ({ row, i, s: row.entity && h.states[row.entity] }))
-      .filter(({ row }) => !row.only || (h.states[row.only.entity] || {}).state === row.only.state)
-      .filter(({ row, s }) => row.head || row.note || (s && !(row.hide_empty && (BAD.includes(s.state) || s.state === '-'))))
+      .filter(({ row }) => !row.only || [].concat(row.only.state).includes((h.states[row.only.entity] || {}).state))
+      .filter(({ row, s }) => row.head || row.note || row.value || (s && !(row.hide_empty && (BAD.includes(s.state) || s.state === '-'))))
       .filter(({ row }) => row.fmt !== 'fwgo' || avail(row));
     const html = [];
     list.forEach(({ row, i, s }, j) => {
@@ -917,6 +965,7 @@ class IrryRowsCard extends IrryCard {
         return;
       }
       if (row.note) { html.push(`<div class="note">${esc(row.note)}</div>`); return; }
+      if (row.value) { html.push(`<div class="r"><span class="n">${esc(row.name)}</span><span class="v">${esc(row.value)}</span></div>`); return; }
       const dom = row.entity.split('.')[0];
       const name = row.fmt === 'fwgo' ? t('fwn_go', { ver: avail(row)[1] }) : row.name;
       const ctl = row.edit ? this.control(dom, row, s, i, name) : null;
@@ -930,22 +979,37 @@ class IrryRowsCard extends IrryCard {
       const row = this._c.rows[+el.dataset.i];
       el.addEventListener(el.tagName === 'BUTTON' ? 'click' : 'change', () => this.write(row, el));
     });
+    // Entity picker of HA (ha-selector, loaded by the HA frontend) in place of a text field.
+    r.querySelectorAll('[data-pk]').forEach((el) => {
+      const row = this._c.rows[+el.dataset.pk], s = h.states[row.entity], p = document.createElement('ha-selector');
+      p.hass = h;
+      p.selector = { entity: { domain: row.pick } };
+      p.value = BAD.includes(s.state) ? '' : s.state;
+      p.addEventListener('value-changed', (e) => this.write(row, { value: (e.detail && e.detail.value) || '', blur() {} }));
+      el.replaceWith(p);
+    });
   }
   // Writable control for the row, or null (read-only domain).
   control(dom, row, s, i, name) {
     const a = s.attributes, t = this._t, dis = s.state === 'unavailable' ? ' disabled' : '';
     if (dom === 'switch' || dom === 'input_boolean')
-      return `<input class="tg" type="checkbox" data-i="${i}"${s.state === 'on' ? ' checked' : ''}${dis}>`;
+      return `${row.fmt ? `<span class="v">${esc(fmtState(row.fmt, s, this.ctx(), row))}</span>` : ''}`
+        + `<input class="tg" type="checkbox" data-i="${i}"${s.state === 'on' ? ' checked' : ''}${dis}>`;
     if (dom === 'select') {
       const tx = (x) => (OPT[row.fmt] && OPT[row.fmt][x] ? t(OPT[row.fmt][x]) : x);
       const o = (a.options || []).map((x) => `<option value="${esc(x)}"${x === s.state ? ' selected' : ''}>${esc(tx(x))}</option>`);
       return `<select data-i="${i}"${dis}>${o.join('')}</select>`;
     }
-    if (dom === 'text') return `<input type="text" data-i="${i}" maxlength="${a.max || 255}" value="${esc(BAD.includes(s.state) ? '' : s.state)}"${dis}>`;
+    if (dom === 'text') {
+      if (row.pick && typeof customElements !== 'undefined' && customElements.get('ha-selector') && !dis) return `<span data-pk="${i}"></span>`;
+      return `<input type="text" data-i="${i}" maxlength="${a.max || 255}" value="${esc(BAD.includes(s.state) ? '' : s.state)}"`
+        + `${row.pat ? ` pattern="${esc(row.pat)}" spellcheck="false" autocapitalize="off" title="${esc(t('x_bad_ent'))}"` : ''}${dis}>`;
+    }
     if (dom === 'number') {
-      const v = parseFloat(s.state), u = a.unit_of_measurement, x = devValue(v, u, this._m.imp);
-      const show = x ? String(+x[0].toFixed(x[2])) : isNaN(v) ? '' : String(v);
-      return `<label><input type="number" step="any" data-i="${i}" value="${esc(show)}"${dis}> ${esc(x ? x[1] : u || '')}</label>`;
+      // int: whole numbers in the device unit (wind thresholds in km/h or mph), written back on the entity step.
+      const v = parseFloat(s.state), u = a.unit_of_measurement, x = devValue(v, u, this._m.imp), whole = row.int && x;
+      const show = x ? String(+x[0].toFixed(whole ? 0 : x[2])) : isNaN(v) ? '' : String(v);
+      return `<label><input type="number" step="${whole ? 1 : 'any'}" data-i="${i}" value="${esc(show)}"${dis}> ${esc(x ? x[1] : u || '')}</label>`;
     }
     if (dom === 'button') return `<button data-i="${i}"${dis}>${esc(name)}</button>`;
     if (dom === 'time') return `<input type="time" data-i="${i}" value="${esc(/^\d\d:\d\d/.test(s.state) ? s.state.slice(0, 5) : '')}"${dis}>`;
@@ -956,7 +1020,10 @@ class IrryRowsCard extends IrryCard {
     try {
       if (dom === 'switch' || dom === 'input_boolean') await h.callService(dom, el.checked ? 'turn_on' : 'turn_off', {}, target);
       else if (dom === 'select') await h.callService('select', 'select_option', { option: el.value }, target);
-      else if (dom === 'text') await h.callService('text', 'set_value', { value: el.value }, target);
+      else if (dom === 'text') {
+        if (row.pat && el.value && !new RegExp(row.pat).test(el.value)) { if (el.classList) el.classList.add('bad'); return; }
+        await h.callService('text', 'set_value', { value: el.value }, target);
+      }
       else if (dom === 'time') { if (el.value) await h.callService('time', 'set_value', { time: `${el.value.slice(0, 5)}:00` }, target); }
       else if (dom === 'button') {
         if (row.confirm && !window.confirm(row.confirm)) return;
@@ -1020,7 +1087,7 @@ class IrryEditCard extends IrryCard {
       <label>${esc(t('from'))} <input type="date" data-k="${key}" data-f="from" value="${esc(v.from)}"></label></div>`;
     return `<div class="row">
       <label>${esc(t('start'))} <input type="time" data-k="${key}" data-f="start" value="${esc(v.start)}"></label>
-      <label>${esc(this._durLbl || t('dur'))} ${step('duration', v.duration, 'min')}</label></div>
+      <label>${esc(this._durLbl || t('dur'))} ${step('duration', v.duration, 'min')}</label>${this.est ? this.est(v) : ''}</div>
       <div class="row"><label>${esc(t('days'))} <select data-k="${key}" data-f="mode">${md}</select></label></div>${days}${every}`;
   }
   // Wires the controls of fields(): writes into this.val(key), then this.changed(key, repaint).
@@ -1078,25 +1145,48 @@ class IrryEditCard extends IrryCard {
 // The three slots of one zone, each saved as soon as it changes with esphome.<node>_set_slot
 // (atomic, the 3-zone rule checked by the firmware; refused -> the card shows the device values again).
 class IrrySlotCard extends IrryEditCard {
+  setConfig(c) { super.setConfig(c); this._open = new Set(); }
+  // Today's zone factor (%) while the method adapts the durations, else null.
+  factor() {
+    const m = this._m, n = this._c.zone, meth = m.st('irrigation_method'), f = parseFloat(m.st(`zone_${n}_irrigation_factor`));
+    if (!meth || meth === 'none' || BAD.includes(meth) || m.st(`zone_${n}_plant_type`) === 'Not adapted' || isNaN(f)) return null;
+    return f;
+  }
+  est(v) { const f = this.factor(); return f == null || !v.duration ? '' : `<span class="est">${esc(this._t('x_today_est', { min: Math.round((v.duration * f) / 100) }))}</span>`; }
   signature() {
     const m = this._m, n = this._c.zone;
     if (!m) return 'none';
-    return JSON.stringify([this._l, m.label(n), [1, 2, 3].map((s) => slotFrom(m, n, s))]);
+    return JSON.stringify([this._l, m.label(n), [1, 2, 3].map((s) => slotFrom(m, n, s)), this.factor()]);
   }
   load() { this._v = this._m ? [1, 2, 3].map((s) => slotFrom(this._m, this._c.zone, s)) : []; }
   val(k) { return this._v[+k]; }
+  // One line per slot (title, days, switch); a tap opens the fields of an enabled slot.
   paint() {
-    const t = this._t, r = this.shadowRoot;
+    const t = this._t, r = this.shadowRoot, l = this._l;
     if (!this._m) return this.noDev();
-    const sl = this._v.map((v, i) => `<div class="slot${v.enabled ? '' : ' off'}">
-      <div class="sh"><span class="b">${esc(t('slot'))} ${i + 1} · ${esc(v.start)} · ${v.duration} min</span>
+    const dn = dayNames(l);
+    const when = (v) => (v.mode === 'week' ? (v.days.length === 7 ? t('all') : v.days.map((d) => dn[DAYS.indexOf(d)]).join(' '))
+      : v.mode === 'every' ? `${t('dm_every')} (${v.every_n})` : t('dm_' + v.mode));
+    const sl = this._v.map((v, i) => {
+      const open = v.enabled && this._open.has(i);
+      return `<div class="slot${v.enabled ? '' : ' off'}${open ? ' open' : ''}">
+      <div class="sh" data-open="${i}">${v.enabled ? '<span class="cv">›</span>' : ''}<span class="b">${esc(t('slot'))} ${i + 1}`
+        + `${v.enabled ? ` · ${esc(v.start)} · ${v.duration} min <span class="sub">· ${esc(when(v))}</span>` : ''}</span>
         <input class="tg" type="checkbox" data-k="${i}" data-f="enabled" title="${esc(t('active'))}"${v.enabled ? ' checked' : ''}></div>
-      <div class="body">${this.fields(v, i)}</div>${this.msgHtml(i)}</div>`).join('');
-    r.innerHTML = `<style>${CSS}</style><ha-card><div class="wrap" style="padding-top:16px">${sl}</div></ha-card>`;
+      ${open ? `<div class="body">${this.fields(v, i)}</div>` : ''}${this.msgHtml(i)}</div>`;
+    }).join('');
+    r.innerHTML = `<style>${CSS}</style><ha-card><div class="wrap" style="padding-top:12px">${sl}</div></ha-card>`;
     this.wire();
+    r.querySelectorAll('[data-open]').forEach((el) => el.addEventListener('click', (e) => {
+      if (e.target && e.target.classList && e.target.classList.contains('tg')) return;
+      const i = +el.dataset.open;
+      if (this._open.has(i)) this._open.delete(i); else this._open.add(i);
+      this.paint();
+    }));
   }
-  // Clicks and edits close together make one write.
+  // Clicks and edits close together make one write; a slot switched on opens.
   changed(i, repaint) {
+    if (this._v[+i].enabled) this._open.add(+i);
     super.changed(i, repaint);
     this._pend.add(i);
     clearTimeout(this._tm[i]);
@@ -1143,7 +1233,7 @@ class IrryRapidCard extends IrryEditCard {
     const so = [1, 2, 3].map((s) => `<option value="${s}"${s === this._slot ? ' selected' : ''}>${esc(t('slot'))} ${s}</option>`).join('');
     const zl = this._order.map((n, i) => `<div class="z">
       <label><input type="checkbox" data-zone="${n}"${this._inc.has(n) ? ' checked' : ''}> ${esc(m.label(n))}</label>
-      <button class="s" data-up="${i}"${i ? '' : ' disabled'} title="${esc(t('up'))}">▲</button></div>`).join('');
+      <button class="up" data-up="${i}"${i ? '' : ' disabled'} title="${esc(t('up'))}" aria-label="${esc(t('up'))}">▲</button></div>`).join('');
     const off = [1, 2, 3].filter((s) => s !== this._slot).map((s) =>
       `<label><input type="checkbox" data-off="${s}"${this._off.has(s) ? ' checked' : ''}> ${esc(t('turn_off_slot', { slot: s }))}</label>`).join('');
     r.innerHTML = `<style>${CSS}</style><ha-card><div class="wrap" style="padding-top:16px">
@@ -1221,15 +1311,21 @@ const DAYCSS = `
   .wk{display:flex;gap:4px;margin:10px 0} .wk button{flex:1;padding:4px 0;background:rgba(127,127,127,.12);color:var(--primary-text-color);
     display:flex;flex-direction:column;align-items:center;line-height:1.2} .wk button small{font-size:11px;opacity:.75}
   .wk button.on{background:var(--primary-color);color:var(--text-primary-color,#fff)} .wk button.td{font-weight:700}
-  .tlax{display:flex;justify-content:space-between;margin:12px 0 6px 100px;font-size:11.5px;color:var(--secondary-text-color)}
+  .tlax{position:relative;height:14px;margin:12px 0 6px 100px;font-size:11.5px;color:var(--secondary-text-color)}
+  .tlax span{position:absolute;transform:translateX(-50%)} .tlax span:first-child{transform:none} .tlax span.e{transform:translateX(-100%)}
+  .tk{position:absolute;top:0;bottom:0;width:1px;background:var(--divider-color)}
+  .ovw{position:absolute;top:0;bottom:0;background:rgba(255,152,0,.28);border-left:1px solid var(--warning-color,#ff9800);border-right:1px solid var(--warning-color,#ff9800)}
+  .ovw.er{background:rgba(219,68,55,.25);border-color:var(--error-color)}
+  .ovs summary{cursor:pointer} .ovs ul{margin:6px 0 0;padding-left:18px}
+  .zt{display:flex;justify-content:flex-end;margin-top:6px} .zt button{background:none;color:var(--primary-color);padding:2px 6px;font-size:12.5px}
   .tlr{display:flex;align-items:center;gap:8px;margin:7px 0}
   .tlr .n{width:92px;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:none;color:var(--secondary-text-color)}
-  .tlt{flex:1;position:relative;height:26px;border-radius:8px;overflow:hidden;
-    background:rgba(127,127,127,.12) repeating-linear-gradient(to right,transparent 0 calc(25% - 1px),var(--divider-color) calc(25% - 1px) 25%)}
-  .bar{position:absolute;top:4px;bottom:4px;border-radius:5px;min-width:3px}
+  .tlt{flex:1;position:relative;height:26px;border-radius:8px;overflow:hidden;background:rgba(127,127,127,.12)}
+  .bar{position:absolute;top:4px;bottom:4px;border-radius:5px;min-width:3px;box-sizing:border-box}
+  .bar.pl{border:2px solid;background:none} .bar.pl.pa{opacity:.45}
   .nowl{position:absolute;top:0;bottom:0;width:2px;background:var(--error-color);border-radius:2px}
   .lg{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:12px;font-size:12px;color:var(--secondary-text-color)}
-  .lg span{display:flex;gap:6px;align-items:center} .lg i{width:10px;height:10px;border-radius:3px;display:inline-block}
+  .lg span{display:flex;gap:6px;align-items:center} .lg i{width:12px;height:10px;border-radius:3px;display:inline-block;box-sizing:border-box}
   .ct{font-weight:500;margin:16px 0 6px;color:var(--primary-text-color)}
   .dli{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding:10px 0;border-top:1px solid var(--divider-color);font-size:14px}
   .dli:first-of-type{border-top:0} .dli .sd{width:10px;height:10px;border-radius:3px;flex:none}
@@ -1255,7 +1351,7 @@ class IrryDayCard extends IrryGetCard {
     const m = this._m;
     if (!m) return 'none';
     const td = devToday(this._h);
-    return JSON.stringify([this._l, this._g, td, this._ver, this.dark(), m.zones.map(m.label), devSlots(m), !!m.action('get')]);
+    return JSON.stringify([this._l, this._g, this._full, td, this._ver, this.dark(), m.zones.map(m.label), devSlots(m), !!m.action('get')]);
   }
   paint() {
     const m = this._m, t = this._t, l = this._l, r = this.shadowRoot;
@@ -1263,24 +1359,51 @@ class IrryDayCard extends IrryGetCard {
     const g = this._g, td = devToday(this._h), Z = devSlots(m), svc = !!m.action('get');
     const jr = g <= 0 ? this.hist(td.dn + g, td) : null, jy = g <= 0 ? this.hist(td.dn + g - 1, td) : null;
     const D = dayModel(Z, g, td, jr && jr.r, jy && jy.r), dn = D.dn, nm = D.nm, HO = this._ho, zn = m.zones.map(m.label);
-    const one = (b) => (b.b > b.a ? `<i class="bar" style="left:${b.a / 14.4}%;width:${Math.max((b.b - b.a) / 14.4, 1)}%;`
-      + `${b.tl ? `border:1.5px dashed ${dcol(b.c)};` : ''}${b.past ? hatch(dcol(b.c)) : b.tl ? '' : `background:${dcol(b.c)}`}"></i>` : '');
-    const tl = D.rows.map((x) => `<div class="tlr"><span class="n">${esc(zn[x.zi])}</span><div class="tlt">${x.bars.map(one).join('')}`
-      + `${nm < 0 || nm >= 1440 ? '' : `<i class="nowl" style="left:${nm / 14.4}%"></i>`}</div></div>`).join('');
+    // Range: first start - 1 h to last end + 1 h (at least 4 h), or the whole day.
+    const all = D.rows.flatMap((x) => x.bars).filter((b) => b.b > b.a);
+    let lo = 0, hi = 1440;
+    if (!this._full && all.length) {
+      lo = Math.max(0, Math.floor((Math.min(...all.map((b) => b.a)) - 60) / 60) * 60);
+      hi = Math.min(1440, Math.ceil((Math.max(...all.map((b) => b.b)) + 60) / 60) * 60);
+      if (hi - lo < 240) { const c = Math.round((lo + hi) / 120) * 60; lo = Math.max(0, Math.min(c - 120, 1200)); hi = lo + 240; }
+    }
+    const zoomed = lo > 0 || hi < 1440, sp = hi - lo, P = (x) => ((Math.min(hi, Math.max(lo, x)) - lo) / sp) * 100;
+    const stp = [60, 120, 180, 240, 360].find((v) => sp / v <= 8) || 360;
+    const ticks = []; for (let x = Math.ceil(lo / stp) * stp; x <= hi; x += stp) ticks.push(x);
+    // Solid = done (history), outline = planned (faded once past), hatched = tail from the day before.
+    const one = (b) => {
+      const a = Math.max(b.a, lo), e = Math.min(b.b, hi);
+      if (e <= a) return '';
+      const c = dcol(b.c), pos = `left:${P(a)}%;width:${Math.max(P(e) - P(a), 0.6)}%;`;
+      if (b.tl) return `<i class="bar" style="${pos}${hatch(c)}"></i>`;
+      if (b.h) return `<i class="bar" style="${pos}background:${c}"></i>`;
+      return `<i class="bar pl${b.past ? ' pa' : ''}" style="${pos}border-color:${c}"></i>`;
+    };
+    const ovw = (zi) => D.ov.filter((w) => w.zs.includes(zi) && w.b > lo && w.a < hi)
+      .map((w) => `<i class="ovw${w.zs.length > MAXO ? ' er' : ''}" style="left:${P(w.a)}%;width:${P(w.b) - P(w.a)}%"></i>`).join('');
+    const tks = ticks.map((x) => (x > lo && x < hi ? `<i class="tk" style="left:${P(x)}%"></i>` : '')).join('');
+    const tl = D.rows.map((x) => `<div class="tlr"><span class="n">${esc(zn[x.zi])}</span><div class="tlt">${tks}${ovw(x.zi)}${x.bars.map(one).join('')}`
+      + `${nm < lo || nm >= hi ? '' : `<i class="nowl" style="left:${P(nm)}%"></i>`}</div></div>`).join('');
+    const ax = ticks.map((x) => `<span${x >= hi ? ' class="e"' : ''} style="left:${P(x)}%">${zoomed ? (x === 1440 ? '24:00' : hm(x)) : x / 60}</span>`).join('');
     const hsrc = (x) => (x[3] >= 1 && x[3] <= 3 ? `S${x[3]}` : x[3] === 4 ? t('h_web') : 'HA');
-    const li = (x) => {
-      const h = x.h;
+    // Consecutive rows of the same zone and outcome make one row (×n).
+    const pst = (x) => (nm >= x.b ? 'p' : nm >= x.a ? 'n' : 'f');
+    const gk = (x) => `${x.zi}|${x.tl ? 1 : 0}|${x.h ? `h${x.h[4]}|${x.h[3]}|${x.h[5]}` : `p${x.k}|${pst(x)}`}`;
+    const grp = [];
+    D.list.forEach((x) => { const z = grp[grp.length - 1]; if (z && gk(z[0]) === gk(x) && !(x.h && !x.h[4])) z.push(x); else grp.push([x]); });
+    const li = (G) => {
+      const x = G[0], y = G[G.length - 1], h = x.h, n = G.length > 1 ? `<span class="badge">×${G.length}</span>` : '';
       if (!h) {
-        const past = nm >= x.b, now = nm >= x.a && nm < x.b;
-        return `<div class="dli${past ? ' past' : ''}${now ? ' now' : ''}"><i class="sd" style="background:${dcol(x.k + 1)}"></i>`
-          + `<span class="tm2">${hm(x.a)}–${hm(x.b)}</span><span class="nm">${esc(zn[x.zi])}</span>`
-          + `${now ? `<span class="badge ac">${esc(t('in_prog'))}</span>` : ''}<span class="badge">S${x.k + 1}</span></div>`;
+        const past = nm >= y.b, now = G.some((q) => nm >= q.a && nm < q.b);
+        return `<div class="dli${past ? ' past' : ''}${now ? ' now' : ''}"><i class="sd" style="border:2px solid ${dcol(x.k + 1)};box-sizing:border-box"></i>`
+          + `<span class="tm2">${hm(x.a)}–${hm(y.b)}</span><span class="nm">${esc(zn[x.zi])}</span>`
+          + `${now ? `<span class="badge ac">${esc(t('in_prog'))}</span>` : ''}${n}<span class="badge">S${x.k + 1}</span></div>`;
       }
       const sk = hsk(h[4]), now = !h[4], c = dcol(h[3] >= 1 && h[3] <= 3 ? h[3] : 0);
       const o = h[4] > 1 ? `<span class="badge${sk || h[4] === 3 || h[4] === 5 || h[4] === 11 ? ' wa' : h[4] === 7 ? ' er' : ''}">${esc(t(HOUT[h[4]] || `h_o${h[4]}`))}</span>` : '';
-      return `<div class="dli${now ? ' now' : ' past'}"><i class="sd" style="${sk ? `border:1.5px solid ${c}` : `background:${c}`}"></i>`
-        + `<span class="tm2">${hm(x.a)}${sk ? '' : '–' + hm(Math.round(x.b))}</span><span class="nm">${esc(zn[x.zi])}</span>`
-        + `${now ? `<span class="badge ac">${esc(t('in_prog'))}</span>` : o}${h[5] & 1 ? `<span class="badge">${esc(t('h_res'))}</span>` : ''}`
+      return `<div class="dli${now ? ' now' : ' past'}"><i class="sd" style="${sk ? `border:1.5px solid ${c};box-sizing:border-box` : `background:${c}`}"></i>`
+        + `<span class="tm2">${hm(x.a)}${sk ? (G.length > 1 ? '–' + hm(y.a) : '') : '–' + hm(Math.round(y.b))}</span><span class="nm">${esc(zn[x.zi])}</span>`
+        + `${now ? `<span class="badge ac">${esc(t('in_prog'))}</span>` : o}${n}${h[5] & 1 ? `<span class="badge">${esc(t('h_res'))}</span>` : ''}`
         + `${h[5] & 2 ? `<span class="badge">${esc(t('h_met'))}</span>` : ''}<span class="badge">${esc(hsrc(h))}</span></div>`;
     };
     const nb = (v, txt, k) => `<button class="ib" data-gw="${v}"${v < 0 && !(g > 0 || (HO >= 0 && HO != null && dn > HO)) ? ' disabled' : ''}`
@@ -1289,24 +1412,72 @@ class IrryDayCard extends IrryGetCard {
     const wk = [0, 1, 2, 3, 4, 5, 6].map((o) => { const d = td.dn + gw + o;
       return `<button data-g="${gw + o}" class="${gw + o === g ? 'on' : ''}${gw + o ? '' : ' td'}">${esc(nar[(d + 3) % 7])}<small>${domOf(d)}</small></button>`; }).join('');
     const date = new Intl.DateTimeFormat(l, { weekday: 'short', day: 'numeric', month: 'long', timeZone: 'UTC' }).format(dn * 864e5);
-    const ov = D.ov.map((w) => `<ha-alert alert-type="${w.zs.length > MAXO ? 'error' : 'warning'}">${esc(t('ovl_ban',
-      { count: w.zs.length, from: hm(w.a), to: hm(w.b), zones: w.zs.map((z) => zn[z]).join(', ') }))}</ha-alert>`).join('');
-    const lg = `${[1, 2, 3].map((k) => `<span><i style="background:var(--c${k})"></i>S${k}</span>`).join('')}`
-      + `${D.real ? `<span><i style="background:var(--secondary-text-color)"></i>${esc(t('h_man'))}</span>` : ''}<span>${esc(t('tail'))}</span>`
-      + `${nm < 0 ? '' : `<span><i style="${hatch('var(--secondary-text-color)')}"></i>${esc(t(D.real ? 'h_real' : 'past'))}</span>`}`;
+    // Overlaps: one summary line, the windows in a fold and marked on the timeline.
+    const mx = D.ov.reduce((a, w) => Math.max(a, w.zs.length), 0);
+    const ov = D.ov.length ? `<ha-alert alert-type="${mx > MAXO ? 'error' : 'warning'}"><details class="ovs"><summary>${esc(t('x_ovl_sum',
+      { count: D.ov.length, max: mx }))}</summary><ul>${D.ov.map((w) => `<li>${esc(t('ovl_ban',
+      { count: w.zs.length, from: hm(w.a), to: hm(w.b), zones: w.zs.map((z) => zn[z]).join(', ') }))}</li>`).join('')}</ul></details></ha-alert>` : '';
+    // Legend: only what the timeline shows.
+    const cs = new Set(all.map((b) => b.c)), sw = 'var(--secondary-text-color)';
+    const lg = [1, 2, 3].filter((k) => cs.has(k)).map((k) => `<span><i style="background:var(--c${k})"></i>S${k}</span>`).join('')
+      + (cs.has(0) ? `<span><i style="background:${sw}"></i>${esc(t('h_man'))}</span>` : '')
+      + (all.some((b) => b.h && !b.tl) ? `<span><i style="background:${sw}"></i>${esc(t('h_real'))}</span>` : '')
+      + (all.some((b) => !b.h && !b.tl) ? `<span><i style="border:2px solid ${sw}"></i>${esc(t('x_planned'))}</span>` : '')
+      + (all.some((b) => b.tl) ? `<span><i style="${hatch(sw)}"></i>${esc(t('x_tail'))}</span>` : '')
+      + (D.ov.length ? `<span><i style="background:rgba(255,152,0,.4)"></i>${esc(t('ovl'))}</span>` : '');
+    const zt = all.length && (zoomed || this._full) ? `<div class="zt"><button data-zoom>${esc(this._full ? t('x_zoom') : t('x_full_day'))}</button></div>` : '';
     const notes = `${!svc ? `<div class="note">${esc(t('x_no_svc'))}</div>` : ''}${D.real && jr.x ? `<div class="note">${esc(t('h_part'))}</div>` : ''}`;
     r.innerHTML = `<style>${CSS}${DAYCSS}</style><ha-card><div class="wrap${this.dark() ? ' dark' : ''}" style="padding-top:16px">
       <div class="gnav">${nb(-7, '«', 'prev_week')}${nb(-1, '‹', 'prev_day')}
         <label class="fl gdp"><span>${esc(date)}</span><input type="date" data-date value="${isoOf(dn)}"${HO >= 0 && HO != null ? ` min="${isoOf(Math.min(HO, td.dn))}"` : ''} aria-label="${esc(t('pick_date'))}"></label>
         ${g ? `<button data-gw="${-g}">${esc(t('today').replace(/^./, (x) => x.toUpperCase()))}</button>` : ''}${nb(1, '›', 'next_day')}${nb(7, '»', 'next_week')}</div>
       <div class="wk">${wk}</div>${ov}
-      <div class="tlax"><span>0</span><span>6</span><span>12</span><span>18</span><span>24</span></div>${tl}<div class="lg">${lg}</div>
+      <div class="tlax">${ax}</div>${tl}${zt}<div class="lg">${lg}</div>
       <div class="ct">${esc(t('day_list'))}</div>${notes}
-      ${D.list.length ? D.list.map(li).join('') : `<div class="note">${esc(t(D.none ? 'h_none' : 'no_irr'))}</div>`}</div></ha-card>`;
+      ${grp.length ? grp.map(li).join('') : `<div class="note">${esc(t(D.none ? 'h_none' : 'no_irr'))}</div>`}</div></ha-card>`;
     const go = (v) => { this._g = v; this._sig = ''; this.hass = this._h; };
     r.querySelectorAll('[data-gw]').forEach((el) => el.addEventListener('click', () => go(g + +el.dataset.gw)));
     r.querySelectorAll('[data-g]').forEach((el) => el.addEventListener('click', () => go(+el.dataset.g)));
+    const z = r.querySelector('[data-zoom]');
+    if (z) z.addEventListener('click', () => { this._full = !this._full; this._sig = ''; this.hass = this._h; });
     r.querySelector('[data-date]').addEventListener('change', (e) => { if (e.target.value) { e.target.blur(); go(dnOf(e.target.value) - td.dn); } });
+  }
+}
+
+// Last events of the device: the Last Event changes of the last 48 h from the HA history, in the user language.
+class IrryEventsCard extends IrryCard {
+  setConfig(c) { super.setConfig(c); this._ev = null; this._at = 0; this._key = null; }
+  signature() {
+    const s = this._m && this._m.so('last_event');
+    if (!s) return 'none';
+    return JSON.stringify([this._l, s.state, s.last_changed, this._ev && this._ev.length, this._at]);
+  }
+  load() {
+    const s = this._m && this._m.so('last_event'), id = this._m && this._m.E('last_event');
+    if (!s) return;
+    const key = `${s.state}|${s.last_changed || s.last_updated || ''}`;
+    if (!this._h.callWS || this._key === key) return;
+    this._key = key;
+    this._h.callWS({ type: 'history/history_during_period', start_time: new Date(Date.now() - 48 * 3600e3).toISOString(),
+      entity_ids: [id], minimal_response: true, no_attributes: true })
+      .then((r) => {
+        this._ev = ((r && r[id]) || []).map((x) => ({ s: x.s != null ? x.s : x.state,
+          at: x.lu != null ? new Date(x.lu * 1000) : new Date(x.last_updated || x.last_changed) }))
+          .filter((x) => x.s && !BAD.includes(x.s)).reverse();
+      })
+      .catch(() => { this._ev = []; })
+      .finally(() => { this._at = Date.now(); this._sig = ''; if (this._h) this.hass = this._h; });
+  }
+  paint() {
+    const t = this._t, m = this._m, r = this.shadowRoot;
+    if (!m) return this.noDev();
+    const s = m.so('last_event'), c = this.ctx();
+    let ev = this._ev || [];
+    if (!this._ev && s && !BAD.includes(s.state))  // the history is not there yet
+      ev = [{ s: s.state, at: new Date(s.last_changed || s.last_updated) }, ...ev];
+    const rows = ev.slice(0, 30).map((x) => `<div class="r"><span class="v" style="flex:1;text-align:left;max-width:none">${esc(eventText(m, t, this._l, x.s))}</span>`
+      + `<span class="n" style="flex:none;white-space:nowrap">${esc(fmtTime(x.at, c))}</span></div>`).join('');
+    r.innerHTML = `<style>${CSS}</style><ha-card><div class="wrap">${rows || `<div class="note">${esc(t('x_ev_none'))}</div>`}</div></ha-card>`;
   }
 }
 
@@ -1355,7 +1526,7 @@ function eVal(c, k, v, kind) {
     case 'W': return `${n(x, 0)} W/m²`;
     case 'lx': return `${n(x, 0)} lx`;
     case 'n': return n(x, x % 1 ? 1 : 0);
-    case 'deg': return `${n(x, 0)}° ${t(WD[(Math.round(x / 45) % 8) * 2])}`;  // 8 directions, as the device
+    case 'deg': return `${t(WD[Math.round(x / 22.5) % 16])} · ${n(x, 0)}°`;
     case 'pm': return `${n(x, 1)} µg/m³`;
     case 'ppm': return `${n(x, 0)} ppm`;
     case 'V': return `${n(x, 2)} V`;
@@ -1404,13 +1575,24 @@ function eDer(f) {
   if (n('solarradiation') != null) o.push([K('es_lux'), n('solarradiation') * 126.7, 'lx']);
   return o;
 }
-// Groups [[label, value], ...] of an ecoraw field map; psl = sea-level pressure text from the device (or null).
-function ecoGroups(c, f, psl) {
-  const t = c.t, g = EG.map(() => []), seen = {};
+// Ecowitt fields the Sensors card already shows as entities: [pattern, entity key ($1 = channel)].
+const EDUP = [[/^temp[fc]$/, 'weather_temperature'], [/^humidity$/, 'weather_humidity'], [/^baromabs/, 'weather_pressure'],
+  [/^baromrel/, 'weather_pressure_sea_level'], [/^(dailyrain|drain_piezo)/, 'weather_rain_today'], [/^(rainrate|rrain_piezo)/, 'weather_rain_rate'],
+  [/^(eventrain|erain_piezo)/, 'weather_rain_event'], [/^last24hrain/, 'rain_last_24h'], [/^windspeed/, 'weather_wind_speed'],
+  [/^windspd.*avg10m$/, 'wind_mean_10_min'], [/^windgust/, 'weather_wind_gust'], [/^winddir$/, 'weather_wind_direction'],
+  [/^solarradiation$/, 'weather_solar_radiation'], [/^uv$/, 'weather_uv_index'], [/^tempin[fc]$/, 'weather_indoor_temperature'],
+  [/^humidityin$/, 'weather_indoor_humidity'], [/^soilmoisture([1-4])$/, 'weather_soil_moisture_$1'], [/^pm25_ch1$/, 'weather_pm2_5'],
+  [/^lightning$/, 'weather_lightning_distance'], [/^lightning_num$/, 'weather_lightning_count']];
+// Groups [[label, value], ...] of an ecoraw field map; psl = sea-level pressure text from the device (or null);
+// dup(entity key) true = that entity has a value, so the first field it comes from is left out (only the extras stay).
+function ecoGroups(c, f, psl, dup) {
+  const t = c.t, g = EG.map(() => []), seen = {}, gone = {};
   for (const k of Object.keys(f)) {
     const r = EK.find((e) => e[0].test(k));
     if (r && r[1] == null) continue;
     if (!r) { g[EGU].push([k, String(f[k])]); continue; }
+    const d = dup && EDUP.find((e) => e[0].test(k)), dk = d && d[1].replace('$1', (k.match(d[0]) || [])[1] || '');
+    if (d && !gone[dk] && dup(dk)) { gone[dk] = 1; continue; }
     const ch = (k.match(r[0]) || [])[1], cc = r[1] === 3 || r[1] === 4 || /^(pm25_|leak_|depth_)/.test(k) ? ch : '';
     const id = `${r[2]}|${r[4] || ''}|${cc || ''}|${r[1] === 5 && !cc ? ch : ''}`;
     if (r[2] && seen[id]) continue;
@@ -1443,8 +1625,12 @@ class IrryEcoCard extends IrryGetCard {
       else {
         const ps = m.so('weather_pressure_sea_level'), psl = ps && !BAD.includes(ps.state) ? fmtState('', ps, c) : null;
         const kv = (k, v) => `<div class="r"><span class="n">${esc(k)}</span><span class="v">${esc(v)}</span></div>`;
-        b = ecoGroups(c, j.f, psl).map((x) => `<div class="h">${esc(x.head)}</div>${x.note ? `<div class="note">${esc(x.note)}</div>` : ''}`
-          + x.rows.map(([k, v]) => kv(k, v)).join('')).join('') + (j.age != null ? `<div class="h"></div>${kv(t('m_eco_rx'), ago(j.age))}` : '');
+        const dup = (k) => { const s = m.so(k); return !!s && !BAD.includes(s.state); };
+        const at = j.age != null ? `${fmtTime(new Date(Date.now() - j.age * 1000).toISOString(), c)} (${ago(j.age, t)})` : '';
+        const gs = ecoGroups(c, j.f, psl, dup);
+        b = (gs.length ? '' : `<div class="note">${esc(t('x_eco_none'))}</div>`)
+          + gs.map((x) => `<div class="h">${esc(x.head)}</div>${x.note ? `<div class="note">${esc(x.note)}</div>` : ''}`
+          + x.rows.map(([k, v]) => kv(k, v)).join('')).join('') + (at ? `<div class="h"></div>${kv(t('m_eco_rx'), at)}` : '');
       }
     }
     r.innerHTML = `<style>${CSS}</style><ha-card><div class="rows">${b}</div></ha-card>`;
@@ -1458,7 +1644,8 @@ class IrryCoefCard extends IrryGetCard {
     if (!m) return 'none';
     const ks = ['irrigation_method', 'weather_data', 'irrigation_factor', 'irrigation_et0_yesterday', 'units',
       ...m.zones.flatMap((n) => [`zone_${n}_irrigation_factor`, `zone_${n}_plant_type`, `zone_${n}_sheltered_from_rain`, `zone_${n}_sheltered_from_wind`])];
-    return JSON.stringify([this._l, m.imp, this._ver, m.zones.map(m.label), ks.map((k) => { const s = m.so(k); return s && [s.state, s.attributes.unit_of_measurement]; })]);
+    return JSON.stringify([this._l, m.imp, this._ver, m.zones.map(m.label), m.zones.map((n) => [1, 2, 3].map((k) => slotFrom(m, n, k).enabled)),
+      ks.map((k) => { const s = m.so(k); return s && [s.state, s.attributes.unit_of_measurement]; })]);
   }
   paint() {
     const m = this._m, t = this._t, c = this.ctx(), r = this.shadowRoot, l = this._l;
@@ -1470,9 +1657,15 @@ class IrryCoefCard extends IrryGetCard {
     if (!meth || meth === 'none' || BAD.includes(meth)) b = `<div class="note">${esc(t('wx_c_off'))}</div>`;
     else {
       b = `<div class="h">${esc(t('m_res'))}</div>${kv(t('m_f'), pc('irrigation_factor'))}`;
-      b += m.zones.map((n) => kv(m.label(n), m.st(`zone_${n}_plant_type`) === 'Not adapted' ? t('m_pt_none')
+      // One line for the value most zones share, then only the zones that differ; zones with no slot enabled are left out.
+      const zt = (n) => (m.st(`zone_${n}_plant_type`) === 'Not adapted' ? t('m_pt_none')
         : pc(`zone_${n}_irrigation_factor`) + (m.st(`zone_${n}_sheltered_from_rain`) === 'on' ? ` · ${t('m_sh')}` : '')
-        + (m.st(`zone_${n}_sheltered_from_wind`) === 'on' ? ` · ${t('m_wx')}` : ''))).join('');
+        + (m.st(`zone_${n}_sheltered_from_wind`) === 'on' ? ` · ${t('m_wx')}` : ''));
+      const on = m.zones.filter((n) => [1, 2, 3].some((k) => slotFrom(m, n, k).enabled)), zs = on.length ? on : m.zones;
+      const cnt = {}; zs.forEach((n) => { cnt[zt(n)] = (cnt[zt(n)] || 0) + 1; });
+      const top = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0];
+      if (zs.length > 1 && cnt[top] > 1) b += kv(t('x_all_zones'), top) + zs.filter((n) => zt(n) !== top).map((n) => kv(m.label(n), zt(n))).join('');
+      else b += zs.map((n) => kv(m.label(n), zt(n))).join('');
       const wd = m.so('weather_data'), e0 = m.so('irrigation_et0_yesterday');
       if (wd) b += kv(t('m_data'), wd.state === 'missing' ? t('m_q_missing') : fmtState('wdata', wd, c));
       if (e0) b += kv(t('m_et0y'), fmtState('', e0, c));
@@ -1571,6 +1764,7 @@ def('irry-eco-card', IrryEcoCard);
 def('irry-coef-card', IrryCoefCard);
 def('irry-cal-card', IrryCalCard);
 def('irry-notes-card', IrryNotesCard);
+def('irry-events-card', IrryEventsCard);
 window.customCards = window.customCards || [];
 window.customCards.push(
   { type: 'irry-rapid-card', name: 'Irry Rapid', description: 'Same start and duration, zones one after another' },
@@ -1581,11 +1775,12 @@ window.customCards.push(
   { type: 'irry-eco-card', name: 'Irry Ecowitt', description: 'Every field of the last Ecowitt upload' },
   { type: 'irry-coef-card', name: 'Irry coefficients', description: 'Today\'s irrigation factors and the rain of the last days' },
   { type: 'irry-cal-card', name: 'Irry calibration', description: 'Reference ET0 and Calibrate' },
+  { type: 'irry-events-card', name: 'Irry events', description: 'Last events of the device, in the user language' },
   { type: 'irry-notes-card', name: 'Irry release notes', description: 'Link to the notes of the offered firmware' },
 );
 console.info(`%c IRRY THE SEVEN %c ${IRRY_VERSION} `, 'background:#2e7d32;color:#fff', '');
 if (typeof module !== 'undefined') {
   module.exports = { irryModel, statusView, irrigationView, weatherView, settingsView, alerts, tr, slug, errText, ovlText,
     eventText, fwText, fmtState, devValue, toUnit, I18N, dayView, dayModel, devSlots, devToday, runs, ovDay, getCall, irryGet, hm, dnOf,
-    ecoGroups, IrryDayCard, IrryEcoCard, IrryCoefCard, IrryCalCard, IrryNotesCard };
+    ecoGroups, IrryDayCard, IrryEcoCard, IrryCoefCard, IrryCalCard, IrryNotesCard, IrryEventsCard };
 }

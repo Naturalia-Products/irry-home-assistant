@@ -97,7 +97,7 @@ function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 
   return {
     language: lang, locale: { language: lang }, config: { time_zone: 'Europe/Rome' },
     devices: {
-      dev1: { id: 'dev1', name: 'Irry The Seven 8dee48', manufacturer: 'Irry', model: 'it7ws', connections: [['mac', 'aa:bb:cc:8d:ee:48']] },
+      dev1: { id: 'dev1', name: 'Irry The Seven 8dee48', manufacturer: 'Irry', model: 'it7ws', sw_version: '2.5.0 (ESPHome 2026.10.0)', connections: [['mac', 'aa:bb:cc:8d:ee:48']] },
       dev2: { id: 'dev2', name: 'Other', manufacturer: 'Espressif', model: 'x' },
     },
     entities, states,
@@ -108,6 +108,7 @@ function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 
     callWS(q) {
       this.ws.push(q);
       if (q.type === 'lovelace/resources') return Promise.resolve(this.resources || []);
+      if (q.type === 'history/history_during_period') return Promise.resolve(this.history || {});
       const d = q.service_data || {}, j = this.getData[`${d.what}/${d.arg}`] ?? this.getData[d.what] ?? null;
       return Promise.resolve({ context: {}, response: { j } });
     },
