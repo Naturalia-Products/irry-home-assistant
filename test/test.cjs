@@ -1,7 +1,12 @@
 // node ha/test/test.cjs: dashboard generation against a fake hass, entity references, texts.
 global.HTMLElement = class {};
 const reg = {};
-global.customElements = { get: (n) => reg[n], define: (n, c) => { reg[n] = c; } };
+const wait = {};
+global.customElements = {
+  get: (n) => reg[n],
+  define: (n, c) => { reg[n] = c; (wait[n] || []).forEach((f) => f()); },
+  whenDefined: (n) => (reg[n] ? Promise.resolve() : new Promise((f) => (wait[n] = wait[n] || []).push(f))),
+};
 global.window = {};
 const path = require('path');
 const { fakeHass } = require('./fake.cjs');
@@ -65,6 +70,13 @@ function refs(o, out = []) {
   const rose = JSON.parse(JSON.stringify(vr)).sections.flatMap((x) => x.cards || []).find((x) => x.type === 'custom:windrose-card');
   const act = rose ? (rose.buttons_config?.buttons || []).filter((x) => x.type === 'period_selector' && x.active).length : -1;
   ok(rose && (!!rose.data_period) !== (act === 1) && act <= 1, `windrose period: data_period ${!!rose?.data_period}, active ${act}`);
+  delete reg['windrose-card'];
+  // windrose-card listed as a resource but registered after this file: the weather view waits for it.
+  const late = fakeHass();
+  late.resources = [{ url: '/hacsfiles/windrose-card/windrose-card.js?hacstag=1', type: 'module' }];
+  setTimeout(() => customElements.define('windrose-card', class {}), 30);
+  const vl = JSON.stringify(await reg['ll-strategy-dashboard-irry-the-seven'].generate({}, late));
+  ok(vl.includes('custom:windrose-card'), 'windrose registered late is kept');
   delete reg['windrose-card'];
   const sv = await reg['ll-strategy-view-irry-settings'].generate({}, fakeHass());
   ok(sv.sections.length === 7 + 6, `settings view strategy ${sv.sections.length}`);

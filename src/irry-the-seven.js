@@ -12,7 +12,7 @@
 // Units: the device "Units" select (Auto = from the time zone), as in the device UI; HA sensor values
 // are converted from whatever unit HA shows them in. Graphs keep the HA unit.
 
-const IRRY_VERSION = '0.3.0';
+const IRRY_VERSION = '0.3.1';
 const I18N = /*I18N*/ {} /*END*/;
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -716,6 +716,19 @@ function settingsView(m, t) {
   };
 }
 
+// HACS cards load in parallel with this file: wait (max 5 s) for the ones listed as dashboard resources, so the
+// weather view does not drop them when this strategy registers first.
+const HACS = ['windrose-card', 'mini-graph-card'];
+async function hacsReady(hass) {
+  if (typeof customElements === 'undefined' || HACS.every((n) => customElements.get(n))) return;
+  let res = [];
+  try { res = await hass.callWS({ type: 'lovelace/resources' }); } catch (e) { return; }
+  if (!Array.isArray(res)) return;
+  const want = HACS.filter((n) => !customElements.get(n) && res.some((r) => String(r.url || '').includes(n)));
+  if (!want.length) return;
+  await Promise.race([Promise.all(want.map((n) => customElements.whenDefined(n))), new Promise((ok) => setTimeout(ok, 5000))]);
+}
+
 const VIEWS = { status: statusView, irrigation: irrigationView, day: dayView, weather: weatherView, settings: settingsView };
 class IrryViewStrategy {
   static view(kind, config, hass) {
@@ -727,7 +740,7 @@ class IrryViewStrategy {
 class IrryStatusStrategy extends HTMLElement { static async generate(c, h) { return IrryViewStrategy.view('status', c, h); } }
 class IrryIrrigationStrategy extends HTMLElement { static async generate(c, h) { return IrryViewStrategy.view('irrigation', c, h); } }
 class IrryDayStrategy extends HTMLElement { static async generate(c, h) { return IrryViewStrategy.view('day', c, h); } }
-class IrryWeatherStrategy extends HTMLElement { static async generate(c, h) { return IrryViewStrategy.view('weather', c, h); } }
+class IrryWeatherStrategy extends HTMLElement { static async generate(c, h) { await hacsReady(h); return IrryViewStrategy.view('weather', c, h); } }
 class IrrySettingsStrategy extends HTMLElement { static async generate(c, h) { return IrryViewStrategy.view('settings', c, h); } }
 class IrryDashboardStrategy extends HTMLElement {
   static async generate(config, hass) {
@@ -738,8 +751,10 @@ class IrryDashboardStrategy extends HTMLElement {
       { title: t('x_irrigation'), path: 'irrigation', icon: 'mdi:calendar-clock', ...irrigationView(m, t) },
       { title: t('g'), path: 'day', icon: 'mdi:calendar-today', ...dayView(m, t) },
     ];
-    if (m.E('weather_temperature') || m.E('weather_wind_speed'))
+    if (m.E('weather_temperature') || m.E('weather_wind_speed')) {
+      await hacsReady(hass);
       views.push({ title: t('wx'), path: 'weather', icon: 'mdi:weather-partly-cloudy', ...weatherView(m, t, config || {}) });
+    }
     views.push({ title: t('cfg'), path: 'settings', icon: 'mdi:cog', ...settingsView(m, t) });
     return { title: m.dev.name_by_user || m.dev.name || 'Irry', views };
   }

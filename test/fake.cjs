@@ -107,6 +107,7 @@ function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 
     // A service with return_response: { context, response: { j } }; getData keys "what/arg" or "what".
     callWS(q) {
       this.ws.push(q);
+      if (q.type === 'lovelace/resources') return Promise.resolve(this.resources || []);
       const d = q.service_data || {}, j = this.getData[`${d.what}/${d.arg}`] ?? this.getData[d.what] ?? null;
       return Promise.resolve({ context: {}, response: { j } });
     },
