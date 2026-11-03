@@ -59,6 +59,13 @@ function refs(o, out = []) {
   ok(de.views[0].title === 'Status' && de.views[1].title === 'Bewässerung', 'language override');
   const v = await reg['ll-strategy-view-irry-weather'].generate({}, fakeHass());
   ok(v.sections.length === 4, 'weather view strategy');
+  // windrose-card 2.7 wants exactly one of data_period or an active period_selector button.
+  reg['windrose-card'] = class {};
+  const vr = await reg['ll-strategy-view-irry-weather'].generate({}, fakeHass());
+  const rose = JSON.parse(JSON.stringify(vr)).sections.flatMap((x) => x.cards || []).find((x) => x.type === 'custom:windrose-card');
+  const act = rose ? (rose.buttons_config?.buttons || []).filter((x) => x.type === 'period_selector' && x.active).length : -1;
+  ok(rose && (!!rose.data_period) !== (act === 1) && act <= 1, `windrose period: data_period ${!!rose?.data_period}, active ${act}`);
+  delete reg['windrose-card'];
   const sv = await reg['ll-strategy-view-irry-settings'].generate({}, fakeHass());
   ok(sv.sections.length === 7 + 5, 'settings view strategy');
   // Weather view without the station: no weather tab.

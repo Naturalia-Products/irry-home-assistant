@@ -11,7 +11,7 @@
 // Units: the device "Units" select (Auto = from the time zone), as in the device UI; HA sensor values
 // are converted from whatever unit HA shows them in. Graphs keep the HA unit.
 
-const IRRY_VERSION = '0.2.0';
+const IRRY_VERSION = '0.2.1';
 const I18N = /*I18N*/ {} /*END*/;
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -400,7 +400,7 @@ function weatherView(m, t, opt = {}) {
     windspeed_entities: [{ entity: E('weather_wind_speed'), name: t('w_spd'), speed_unit: 'auto', use_statistics: false,
       output_speed_unit: m.imp ? 'mph' : 'kph' }],
     buttons_config: { location: 'bottom', buttons: [
-      { type: 'period_selector', button_text: t('es_rd'), preset_period: 'today' },
+      { type: 'period_selector', button_text: t('es_rd'), preset_period: 'today', active: true },
       { type: 'period_selector', button_text: t('wx_7'), preset_period: 'last_7_days' },
       { type: 'period_selector', button_text: t('x_30d'), preset_period: 'last_30_days' },
     ] },
