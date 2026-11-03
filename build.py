@@ -2,7 +2,7 @@
 """Build dist/irry-the-seven.js: the source with the texts it uses inlined.
 
 Texts: i18n.json, plus, inside the firmware repository, the device UI translations
-(../src/ui/i18n/<lang>.json, only the keys the source asks for with t('key')).
+(../src/ui/i18n/<lang>.json, only the keys the source asks for with t('key') or K('key')).
   build.py                 write dist/irry-the-seven.js
   build.py --export DIR    also write the standalone repository tree to DIR, with i18n.json
                            holding every text it needs (no UI translations required there)
@@ -20,7 +20,7 @@ FILES = ['README.md', 'build.py', 'hacs.json', 'src/irry-the-seven.js', 'test/fa
 
 
 def texts(src):
-    keys = {k for k in re.findall(r"(?:\b|_)t\('([a-z0-9_]+)'", src) if not k.endswith('_')}
+    keys = {k for k in re.findall(r"(?:\b|_)[tK]\('([a-z0-9_]+)'", src) if not k.endswith('_')}
     keys |= {'dm_' + m for m in re.search(r"const MODES = \[([^\]]*)\]", src).group(1).replace("'", '').replace(' ', '').split(',')}
     extra = json.loads((HA / 'i18n.json').read_text())
     out, missing = {}, []

@@ -6,7 +6,7 @@ A ready-made dashboard for the Irry The Seven irrigation controller, plus two ca
   their manual switch and expected end time, the values behind the decisions (rain, wind, irrigation factor), events
   and diagnostics.
 - **Irrigation**: the Rapid card (one slot, same start and duration, zones one after another), then for each zone
-  its plant type, rain shelter, wind exemption and the three slots.
+  its plant type, shelter from rain and wind and the three slots.
 - **Weather**: the station readings and charts; shown only when the device receives weather data.
 
 The dashboard finds the device by its manufacturer and the entities by their names, so it keeps working when you

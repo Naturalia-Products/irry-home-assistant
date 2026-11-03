@@ -22,7 +22,13 @@
   const log = () => { document.getElementById('log').textContent = JSON.stringify(hass.calls, null, 1); };
   const orig = hass.callService.bind(hass);
   hass.callService = (...a) => { const p = orig(...a); log(); return p; };
-  for (const [tag, cfg] of [['irry-rapid-card', {}], ['irry-slot-card', { zone: 2 }]]) {
+  // Rows cards as the views generate them: the first zone and System of Settings, the Wind of Status.
+  const lib = module.exports, m = lib.irryModel(hass), t = lib.tr(hass.language);
+  const rowsOf = (v, i) => v.sections[i].cards.find((x) => x.type === 'custom:irry-rows-card');
+  const sv = lib.settingsView(m, t), st = lib.statusView(m, t);
+  const list = [['irry-banner-card', { device: 'dev1' }], ['irry-rows-card', rowsOf(sv, 0)], ['irry-rows-card', rowsOf(sv, sv.sections.length - 1)],
+    ['irry-rows-card', rowsOf(st, 5)], ['irry-rapid-card', {}], ['irry-slot-card', { zone: 2 }]];
+  for (const [tag, cfg] of list) {
     const c = document.createElement(tag);
     c.setConfig(cfg);
     document.getElementById('cards').append(c);

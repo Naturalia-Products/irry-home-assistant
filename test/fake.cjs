@@ -5,7 +5,7 @@ function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 
     binary_sensor: ['Rain Skip Active', 'Rain Value Valid', 'Time Valid', 'Valve Power', 'Weather Battery', 'Wi-Fi Fallback Active', 'Wind Over Threshold'],
     button: ['Close All Zone Valves', 'Firmware Check', 'Firmware Install', 'Ignore Wind', 'Restart'],
     number: ['Aux Off Delay', 'Aux On Delay', 'Manual Max Duration', 'Rain Skip Threshold', 'Wind Gust Threshold', 'Wind Mean Threshold'],
-    select: ['Aux Mode', 'Firmware Update Mode', 'R8 Mode'],
+    select: ['Aux Mode', 'Firmware Update Mode', 'R8 Mode', 'Units'],
     sensor: ['Irrigation ET0 Yesterday', 'Irrigation Factor', 'Rain Last 24h', 'Uptime', 'Weather Humidity', 'Weather Indoor Humidity',
       'Weather Indoor Temperature', 'Weather Pressure', 'Weather Pressure Sea Level', 'Weather Rain Event', 'Weather Rain Rate',
       'Weather Rain Today', 'Weather Solar Radiation', 'Weather Temperature', 'Weather UV Index', 'Weather Wind Direction',
@@ -20,7 +20,7 @@ function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 
   for (let n = 1; n <= 7; n++) names.text.push(`Zone ${n} Label`);
   for (let n = 1; n <= zones; n++) {
     const z = `Zone ${n}`;
-    names.switch.push(`${z} Manual`, `${z} Rain Sheltered`, `${z} Wind Exempt`);
+    names.switch.push(`${z} Manual`, `${z} Sheltered from Rain`, `${z} Sheltered from Wind`);
     names.sensor.push(`${z} Irrigation Factor`);
     names.select.push(`${z} Plant Type`);
     names.text_sensor.push(`${z} End`);
@@ -58,8 +58,23 @@ function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 
   set('Zone 2 S1 Days Mode', 'Every N days', { options: ['Weekdays', 'Even days', 'Odd days', 'Every N days'] });
   set('Zone 2 S1 Every N Days', '3.0');
   set('Zone 2 S1 Every N From', '2026-11-02');
+  set('Units', 'Auto', { options: ['Auto', 'Metric', 'Imperial'] });
+  set('Zone 1 Plant Type', 'Cool-season lawn', { options: ['Cool-season lawn', 'Warm-season lawn', 'Beds, shrubs, hedges',
+    'Vegetable garden', 'Trees, orchard', 'Mediterranean, low water', 'Not adapted'] });
+  set('Aux Mode', 'Sync', { options: ['On', 'Off', 'Last', 'Sync'] });
+  set('Weather Wind Speed', '12.6', { unit_of_measurement: 'km/h', device_class: 'wind_speed' });
+  set('Wind Mean 10 min', '3.5', { unit_of_measurement: 'm/s' });
+  set('Wind Mean Threshold', '5.0', { unit_of_measurement: 'm/s', min: 0, max: 25.5, step: 0.1 });
+  set('Weather Wind Direction', '200', { unit_of_measurement: '°' });
+  set('Weather Temperature', '18.4', { unit_of_measurement: '°C' });
+  set('Weather Pressure', '1013.2', { unit_of_measurement: 'hPa' });
+  set('Irrigation Method', 'fao56');
+  set('Firmware Update Status', '2.4.1 available');
+  set('Last Event', 'Rapid S1: 3 zones');
+  set('Next Irrigation', '2026-11-04T05:00:00+00:00');
+  set('Zone Active', '-');
   return {
-    language: lang, locale: { language: lang },
+    language: lang, locale: { language: lang }, config: { time_zone: 'Europe/Rome' },
     devices: {
       dev1: { id: 'dev1', name: 'Irry The Seven 8dee48', manufacturer: 'Irry', model: 'it7ws', connections: [['mac', 'aa:bb:cc:8d:ee:48']] },
       dev2: { id: 'dev2', name: 'Other', manufacturer: 'Espressif', model: 'x' },
