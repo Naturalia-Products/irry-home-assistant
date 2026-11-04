@@ -67,7 +67,7 @@ function refs(o, out = []) {
   const tabsOf = (vw) => vw.sections.length === 1 && vw.sections[0].cards[0].type === 'custom:irry-tabs-card' ? vw.sections[0].cards[0].tabs : null;
   const cardsOf = (vw) => vw.sections.flatMap((x) => x.cards || []).flatMap((c) => (c.tabs ? c.tabs.flatMap((tb) => tb.sections.flat()) : [c]));
   const wt = tabsOf(v);
-  ok(wt && wt.map((x) => x.name).join() === 'Attuale,Grafici,Ecowitt' && wt.map((x) => x.sections.length).join() === '2,3,1', `weather tabs ${JSON.stringify(wt && wt.map((x) => [x.name, x.sections.length]))}`);
+  ok(wt && wt.map((x) => x.name).join() === 'Grafici,Attuale,Ecowitt' && wt.map((x) => x.sections.length).join() === '3,2,1', `weather tabs ${JSON.stringify(wt && wt.map((x) => [x.name, x.sections.length]))}`);
   ok(cardsOf(v).some((x) => x.type === 'statistics-graph' && x.hide_legend && !/\(/.test(x.title)), 'rain chart: no legend suffix');
   // windrose-card 2.7 wants exactly one of data_period or an active period_selector button.
   reg['windrose-card'] = class {};
@@ -85,6 +85,15 @@ function refs(o, out = []) {
   delete reg['windrose-card'];
   const sv = await reg['ll-strategy-view-irry-settings'].generate({}, fakeHass());
   const stb = tabsOf(sv);
+  // Initial tab: Grafici by default; a remembered tab is found by id, a stale value (old index) falls back to the default.
+  {
+    const wc = v.sections[0].cards[0], mem = {}, ls = global.localStorage;
+    global.localStorage = { getItem: (k) => (k in mem ? mem[k] : null), setItem: (k, x) => { mem[k] = String(x); } };
+    const tc = new lib.IrryTabsCard(); tc.setConfig(wc);
+    const a0 = tc.saved(); mem['irry.tab.weather'] = 'ecowitt'; const a1 = tc.saved(); mem['irry.tab.weather'] = '0'; const a2 = tc.saved();
+    global.localStorage = ls;
+    ok(wc.default === 'graphs' && wt.map((x) => x.id).join() === 'graphs,now,ecowitt' && a0 === 0 && a1 === 2 && a2 === 0, `weather tab memory ${a0},${a1},${a2}`);
+  }
   ok(stb && stb.map((x) => `${x.name}:${x.sections.length}`).join() === 'Zone:7,Meteo:3,Aux:1,Sistema:3', `settings tabs ${stb && stb.map((x) => `${x.name}:${x.sections.length}`)}`);
   ok(JSON.stringify(stb[0].sections[0]).includes('"heading":"Zona 1 · Prato"') && JSON.stringify(stb[0].sections[1]).includes('"heading":"Zona 2"'), 'zone titles: index and name');
   // Weather view without the station: no weather tab.

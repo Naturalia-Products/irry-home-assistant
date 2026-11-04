@@ -12,7 +12,7 @@
 // Units: the device "Units" select (Auto = from the time zone), as in the device UI; HA sensor values
 // are converted from whatever unit HA shows them in. Graphs keep the HA unit.
 
-const IRRY_VERSION = '0.3.4';
+const IRRY_VERSION = '0.3.5';
 const I18N = /*I18N*/ {} /*END*/;
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -435,12 +435,13 @@ function zoneHead(m, t, n) {
   const l = m.st(`zone_${n}_label`);
   return l && !BAD.includes(l) ? `${t('x_zone_n', { n })} · ${l}` : t('x_zone_n', { n });
 }
-// One view section holding the in-card tabs card: tabs = [[name, [section, ...]], ...], empty tabs dropped.
-function tabbed(m, view, tabs) {
-  const tb = tabs.map(([name, ss]) => ({ name, sections: ss.filter(Boolean).map((x) => x.cards) })).filter((x) => x.sections.length);
+// One view section holding the in-card tabs card: tabs = [[id, name, [section, ...]], ...], empty tabs dropped.
+// The id (stable, not the position) is what the browser remembers; def = tab shown when nothing is remembered.
+function tabbed(m, view, tabs, def) {
+  const tb = tabs.map(([id, name, ss]) => ({ id, name, sections: ss.filter(Boolean).map((x) => x.cards) })).filter((x) => x.sections.length);
   return {
     type: 'sections', max_columns: 4,
-    sections: [section([{ type: 'custom:irry-tabs-card', device: m.dev.id, view, tabs: tb, grid_options: { columns: 'full' } }], { column_span: 4 })],
+    sections: [section([{ type: 'custom:irry-tabs-card', device: m.dev.id, view, tabs: tb, ...(def ? { default: def } : {}), grid_options: { columns: 'full' } }], { column_span: 4 })],
   };
 }
 
@@ -667,7 +668,7 @@ function weatherView(m, t, opt = {}) {
       ]),
   };
   // Tabs sized to one screen: values now, the graphs, the raw Ecowitt upload.
-  return tabbed(m, 'weather', [[t('x_tab_now'), [S.sens, S.coef]], [t('wx_g'), [S.wind, S.graphs, S.rain]], [t('m_eco'), [S.eco]]]);
+  return tabbed(m, 'weather', [['graphs', t('wx_g'), [S.wind, S.graphs, S.rain]], ['now', t('x_tab_now'), [S.sens, S.coef]], ['ecowitt', t('m_eco'), [S.eco]]], 'graphs');
 }
 
 function settingsView(m, t) {
@@ -783,7 +784,8 @@ function settingsView(m, t) {
         ]),
       ]),
   };
-  return tabbed(m, 'settings', [[t('zones'), m.zones.map(zone)], [t('wx'), [S.rain, S.wind, S.wx]], [t('aux_def'), [S.aux]], [t('s'), [S.sys, S.diag, S.buz]]]);
+  return tabbed(m, 'settings', [['zones', t('zones'), m.zones.map(zone)], ['weather', t('wx'), [S.rain, S.wind, S.wx]], ['aux', t('aux_def'), [S.aux]],
+    ['system', t('s'), [S.sys, S.diag, S.buz]]]);
 }
 
 // HACS cards load in parallel with this file: wait (max 5 s) for the ones listed as dashboard resources, so the
@@ -1887,7 +1889,14 @@ class IrryTabsCard extends HTMLElement {
   getCardSize() { return 12; }
   getGridOptions() { return { columns: 'full' }; }
   key() { return `irry.tab.${this._c.view || ''}`; }
-  saved() { try { return +localStorage.getItem(this.key()) || 0; } catch (e) { return 0; } }
+  // Remembered tab by id (positions change between versions), else the configured default, else the first.
+  saved() {
+    const tb = this.tabs(), at = (id) => tb.findIndex((x) => x.id === id);
+    let v = null;
+    try { v = localStorage.getItem(this.key()); } catch (e) { /* private mode */ }
+    const i = v != null ? at(v) : -1;
+    return i >= 0 ? i : Math.max(0, at(this._c.default));
+  }
   set hass(h) {
     this._h = h;
     Object.values(this._el).forEach((x) => x.forEach((s) => s.forEach((e) => { e.hass = h; })));
@@ -1897,7 +1906,7 @@ class IrryTabsCard extends HTMLElement {
   async show(i) {
     const tb = this.tabs(), t = tb[i] ? i : 0, r = this.shadowRoot;
     this._tab = t;
-    try { localStorage.setItem(this.key(), String(t)); } catch (e) { /* private mode */ }
+    try { localStorage.setItem(this.key(), String(tb[t] ? tb[t].id ?? t : t)); } catch (e) { /* private mode */ }
     r.innerHTML = `<style>${TABCSS}</style>${tb.length > 1 ? `<div class="bar" role="tablist">${tb.map((x, k) => `<button role="tab" data-i="${k}"
       aria-selected="${k === t}">${esc(x.name)}</button>`).join('')}</div>` : ''}<div class="grid"></div>`;
     r.querySelectorAll('.bar button').forEach((b) => { b.onclick = () => { if (+b.dataset.i !== this._tab) this.show(+b.dataset.i); }; });
