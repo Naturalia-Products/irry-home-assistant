@@ -12,7 +12,7 @@
 // Units: the device "Units" select (Auto = from the time zone), as in the device UI; HA sensor values
 // are converted from whatever unit HA shows them in. Graphs keep the HA unit.
 
-const IRRY_VERSION = '0.3.2';
+const IRRY_VERSION = '0.3.3';
 const I18N = /*I18N*/ {} /*END*/;
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -212,12 +212,23 @@ const MAXO = 3;  // zones open at once, as it7::MAX_OPEN
 // Windows of day dn with two or more zones open: { a, b, zs } (minutes a..b, zone indexes); the tail after midnight
 // counts on the next day; two slots of the same zone do not count.
 function ovDay(Z, dn) {
-  const a = new Uint8Array(1440), w = [];
+  const a = new Uint8Array(1440);
   Z.forEach((zn, z) => zn.s.forEach((s) => {
     if (!s.e || !s.d) return;
     if (runs(s, dn)) for (let x = s.t; x < Math.min(s.t + s.d, 1440); x++) a[x] |= 1 << z;
     if (s.t + s.d > 1440 && runs(s, dn - 1)) for (let x = 0; x < s.t + s.d - 1440; x++) a[x] |= 1 << z;
   }));
+  return ovWin(a);
+}
+// Overlap windows of the bars as drawn (history and today's adapted plan).
+function ovBars(rows) {
+  const a = new Uint8Array(1440);
+  rows.forEach((r) => r.bars.forEach((b) => { for (let x = Math.round(b.a); x < Math.min(Math.round(b.b), 1440); x++) a[x] |= 1 << r.zi; }));
+  return ovWin(a);
+}
+// Windows of a minute mask (bit z = zone index z open) with two or more zones open.
+function ovWin(a) {
+  const w = [];
   for (let x = 0; x < 1440;) {
     const b0 = a[x];
     if (!(b0 & (b0 - 1))) { x++; continue; }
@@ -234,9 +245,11 @@ const hsk = (o) => o >= 8 && o !== 11;
 // History outcome texts by out (2-12); 0 = open, 1 = program end have none.
 const HOUT = [, , K('h_o2'), K('h_o3'), K('h_o4'), K('h_o5'), K('h_o6'), K('h_o7'), K('h_o8'), K('h_o9'), K('h_o10'), K('h_o11'), K('h_o12')];
 // Day model, as the device Day tab: g = days from today, td = devToday(), hr / hy = history rows of the day and of
-// the day before (null: not loaded or in the future). Bars { a, b, c (1-3 slot, 0 by hand), tl (tail), past, h (history) },
+// the day before (null: not loaded or in the future), fz = today's factor (%) of each zone or null (durations as programmed).
+// Overlaps: ov = windows of the bars as drawn (past days and today); on later days the factor is not known yet, so ov
+// comes from the programmed durations and pos is set (possible overlaps); ovp = today's windows with the programmed durations. Bars { a, b, c (1-3 slot, 0 by hand), tl (tail), past, h (history) },
 // list items { a, b, zi, k (slot index) | h (history row), tl }, overlap windows, nm = minute of now (-1 future, 1440 past).
-function dayModel(Z, g, td, hr, hy) {
+function dayModel(Z, g, td, hr, hy, fz = []) {
   const dn = td.dn + g, nm = g < 0 ? 1440 : g ? -1 : td.m, real = !!hr, list = [];
   const col = (x) => (x[3] >= 1 && x[3] <= 3 ? x[3] : 0);
   const open = (z, k) => [...(hr || []), ...(hy || [])].some((x) => x[2] === z && x[3] === k + 1 && !x[4]);
@@ -263,7 +276,9 @@ function dayModel(Z, g, td, hr, hy) {
       });
     }
     // Up to today the history replaces the program; today the program goes on after now.
-    if (!real || !g) zn.s.forEach((s, k) => {
+    const f = !g && fz[zi] != null ? fz[zi] : null;
+    if (!real || !g) zn.s.forEach((s0, k) => {
+      const s = f == null ? s0 : { ...s0, d: Math.round((s0.d * f) / 100) };  // today: the duration the device will run
       if (!s.e || !s.d) return;
       const add = (a, b, tl) => {
         if (real && a <= nm) { if (b > nm && open(zn.z, k)) bar(nm, b, k + 1, tl); return; }  // started: in the history
@@ -276,7 +291,7 @@ function dayModel(Z, g, td, hr, hy) {
     return { zi, z: zn.z, bars };
   });
   list.sort((x, y) => x.a - y.a || x.zi - y.zi);
-  return { dn, nm, real, rows, list, ov: g < 0 ? [] : ovDay(Z, dn), none: g < 0 && !real };
+  return { dn, nm, real, rows, list, ov: g > 0 ? ovDay(Z, dn) : ovBars(rows), pos: g > 0, ovp: g ? null : ovDay(Z, dn), none: g < 0 && !real };
 }
 
 // ---------------------------------------------------------------- the firmware "get" action
@@ -357,7 +372,8 @@ function fmtState(f, s, c, row = {}) {
       const r2 = row.ref && c.h.states[row.ref];
       if (BAD.includes(v) || !r2) return fmtState('', s, c);
       const a = devValue(parseFloat(v), s.attributes.unit_of_measurement, m.imp), b = devValue(parseFloat(r2.state), r2.attributes.unit_of_measurement, m.imp);
-      if (a && b && a[1] === b[1]) return `${nf(a[0], a[2], c.l)} / ${nf(b[0], b[2], c.l)} ${a[1]}`;
+      const da = a && a[2], db = row.int ? 0 : b && b[2];  // int: threshold in whole units, as the Settings field (step 1)
+      if (a && b && a[1] === b[1]) return `${nf(a[0], da, c.l)} / ${nf(b[0], db, c.l)} ${a[1]}`;
       return `${fmtState('', s, c)} / ${fmtState('', r2, c)}`;
     }
     case 'next': {
@@ -414,15 +430,30 @@ function rows(m, list, x = {}) {
   return out.some((e) => !e.head && !e.note) ? { type: 'custom:irry-rows-card', device: m.dev.id, rows: out, grid_options: { columns: 'full' }, ...x } : null;
 }
 
+// Zone heading: the output number and, when set, the name ("Zone 1 · North olives").
+function zoneHead(m, t, n) {
+  const l = m.st(`zone_${n}_label`);
+  return l && !BAD.includes(l) ? `${t('x_zone_n', { n })} · ${l}` : t('x_zone_n', { n });
+}
+// One view section holding the in-card tabs card: tabs = [[name, [section, ...]], ...], empty tabs dropped.
+function tabbed(m, view, tabs) {
+  const tb = tabs.map(([name, ss]) => ({ name, sections: ss.filter(Boolean).map((x) => x.cards) })).filter((x) => x.sections.length);
+  return {
+    type: 'sections', max_columns: 4,
+    sections: [section([{ type: 'custom:irry-tabs-card', device: m.dev.id, view, tabs: tb, grid_options: { columns: 'full' } }], { column_span: 4 })],
+  };
+}
+
 function statusView(m, t) {
   const E = m.E, has = (k) => !!E(k);
   const auxName = m.st('aux_label');
   // Installed firmware: HA ESPHome writes sw_version as "<project version> (ESPHome <version>)".
   const ver = String(m.dev.sw_version || '').split(' ')[0];
-  const zt = m.zones.flatMap((n) => [
-    tile(E(`zone_${n}_manual`), { name: m.label(n), icon: 'mdi:sprinkler-variant', tap_action: toggle }),
-    has(`zone_${n}_end`) && tile(E(`zone_${n}_end`), { name: `${m.label(n)} · ${t('x_end')}`, visibility: shown(E(`zone_${n}_end`)) }),
-  ]);
+  // Zones as rows: a tile would show the switch state (On / Off) where the valve is Open / Closed.
+  const zt = rows(m, m.zones.flatMap((n) => [
+    { k: `zone_${n}_manual`, name: m.label(n), fmt: 'open', edit: true },
+    { k: `zone_${n}_end`, name: `${m.label(n)} · ${t('x_end')}`, hide_empty: true },
+  ]));
   return {
     type: 'sections', max_columns: 4,
     sections: [
@@ -451,7 +482,7 @@ function statusView(m, t) {
         // Waveshare only (x8 has no beeper); no entity tells whether an alarm sounds, so it is always shown.
         has('silence_alarm') && tile(E('silence_alarm'), { name: t('silence'), icon: 'mdi:volume-off', hide_state: true, tap_action: press(E('silence_alarm')) }),
       ]),
-      section([heading(t('zones'), 'mdi:map-marker-radius'), ...zt]),
+      section([heading(t('zones'), 'mdi:map-marker-radius'), zt]),
       E('last_event') && section([
         heading(t('x_log'), 'mdi:history'),
         { type: 'custom:irry-events-card', device: m.dev.id, grid_options: { columns: 'full' } },
@@ -464,8 +495,8 @@ function statusView(m, t) {
           { k: 'rain_last_24h', name: `${t('m_r24')} / ${t('rain_thr')}`, fmt: 'pair', ref: E('rain_skip_threshold') || undefined },
           { k: 'rain_skip_active', name: t('rain_skip'), fmt: 'yes' },
           { head: t('wind_h') },
-          { k: 'wind_mean_10_min', name: `${t('es_ws10')} / ${t('rain_thr')}`, fmt: 'pair', ref: E('wind_mean_threshold') || undefined },
-          { k: 'weather_wind_gust', name: `${t('w_gust')} / ${t('rain_thr')}`, fmt: 'pair', ref: E('wind_gust_threshold') || undefined },
+          { k: 'wind_mean_10_min', name: `${t('es_ws10')} / ${t('rain_thr')}`, fmt: 'pair', int: true, ref: E('wind_mean_threshold') || undefined },
+          { k: 'weather_wind_gust', name: `${t('w_gust')} / ${t('rain_thr')}`, fmt: 'pair', int: true, ref: E('wind_gust_threshold') || undefined },
           { k: 'wind_over_threshold', name: t('x_wind_over'), fmt: 'yes' },
           { k: 'wind_pause', name: t('wp'), fmt: 'wpause' },
         ]),
@@ -507,7 +538,7 @@ function statusView(m, t) {
 function irrigationView(m, t) {
   const E = m.E, has = (k) => !!E(k), dev = m.dev.id;
   const zone = (n) => section([
-    heading(m.label(n), 'mdi:sprinkler-variant'),
+    heading(zoneHead(m, t, n), 'mdi:sprinkler-variant'),
     has(`zone_${n}_end`) && tile(E(`zone_${n}_end`), { name: t('x_end'), visibility: shown(E(`zone_${n}_end`)) }),
     rows(m, [
       { k: `zone_${n}_manual`, name: t('x_man_open'), fmt: 'open', edit: true },
@@ -588,17 +619,15 @@ function weatherView(m, t, opt = {}) {
     current_direction: { show_arrow: true },
     grid_options: { columns: 12 },
   };
-  return {
-    type: 'sections', max_columns: 4,
-    sections: [
-      section([
+  const S = {
+    wind: section([
         heading(t('es_g_wind'), 'mdi:weather-windy'),
         rose,
         ...(mini
           ? [graph(t('w_spd'), [['weather_wind_speed', t('w_spd')]]), graph(t('w_gust'), [['weather_wind_gust', t('w_gust')]])]
           : [graph(t('es_g_wind'), [['weather_wind_speed', t('w_spd')], ['wind_mean_10_min', t('es_ws10')], ['weather_wind_gust', t('w_gust')]])]),
       ]),
-      section([
+    sens: section([
         heading(t('wx_s'), 'mdi:format-list-bulleted'),
         rows(m, [
           { head: t('es_g_out') },
@@ -637,29 +666,31 @@ function weatherView(m, t, opt = {}) {
           { k: 'weather_battery', name: t('m_batt'), fmt: 'batt' },
         ]),
       ]),
-      section([
+    graphs: section([
         heading(t('wx_g'), 'mdi:chart-line'),
         graph(t('m_t'), [['weather_temperature', t('es_g_out')], ['weather_indoor_temperature', t('es_g_in')]]),
         graph(t('m_rh'), [['weather_humidity', t('es_g_out')], ['weather_indoor_humidity', t('es_g_in')]]),
         graph(t('m_psl'), [['weather_pressure_sea_level', t('m_psl')]]),
         graph(t('m_rs'), [['weather_solar_radiation', t('m_rs')]]),
       ]),
-      section([
+    coef: section([
         heading(t('wx_c'), 'mdi:sprout'),
         { type: 'custom:irry-coef-card', device: m.dev.id, grid_options: { columns: 'full' } },
       ]),
-      section([
+    eco: has('weather_feed') && section([
         heading(t('m_eco'), 'mdi:access-point'),
         { type: 'custom:irry-eco-card', device: m.dev.id, grid_options: { columns: 'full' } },
       ]),
-      section([
+    rain: section([
         heading(t('rain'), 'mdi:weather-pouring'),
         graph(t('es_rr'), [['weather_rain_rate', t('es_rr')]]),
-        has('weather_rain_today') && { type: 'statistics-graph', title: t('wx_7'), entities: [{ entity: E('weather_rain_today'), name: t('x_rain_daily') }],
-          stat_types: ['change'], period: 'day', days_to_show: 7, chart_type: 'bar', grid_options: { columns: 12 } },
+        has('weather_rain_today') && { type: 'statistics-graph', title: `${t('wx_7')} · ${t('x_rain_daily')}`,
+          entities: [{ entity: E('weather_rain_today'), name: t('x_rain_daily') }],  // HA adds " (<stat type>)" to the name: no legend
+          stat_types: ['change'], period: 'day', days_to_show: 7, chart_type: 'bar', hide_legend: true, grid_options: { columns: 12 } },
       ]),
-    ],
   };
+  // Tabs sized to one screen: values now, the graphs, the raw Ecowitt upload.
+  return tabbed(m, 'weather', [[t('x_tab_now'), [S.sens, S.coef]], [t('wx_g'), [S.wind, S.graphs, S.rain]], [t('m_eco'), [S.eco]]]);
 }
 
 function settingsView(m, t) {
@@ -668,7 +699,7 @@ function settingsView(m, t) {
   // (HA has no source entity, so with no source they are the way to choose Home Assistant).
   const ECO = ['unpaired', 'stale', 'ok'], NOECO = ['none', ...BAD];
   const zone = (n) => section([
-    heading(m.label(n), 'mdi:sprinkler-variant'),
+    heading(zoneHead(m, t, n), 'mdi:sprinkler-variant'),
     rows(m, [
       { k: `zone_${n}_label`, name: t('x_zname'), edit: true },
       { k: `zone_${n}_plant_type`, name: t('x_pt'), fmt: 'plant', edit: true },
@@ -676,11 +707,8 @@ function settingsView(m, t) {
       { k: `zone_${n}_sheltered_from_wind`, name: t('m_wx'), edit: true },
     ]),
   ]);
-  return {
-    type: 'sections', max_columns: 4,
-    sections: [
-      ...m.zones.map(zone),
-      section([
+  const S = {
+    rain: section([
         heading(t('rain'), 'mdi:weather-pouring'),
         rows(m, [
           { k: 'rain_skip_threshold', name: t('rain_thr'), edit: true },
@@ -689,14 +717,14 @@ function settingsView(m, t) {
           { note: t('m_rain_eco'), only: { k: 'weather_feed', state: ECO } },
         ]),
       ]),
-      section([
+    wind: section([
         heading(t('wind_h'), 'mdi:weather-windy'),
         rows(m, [
           { k: 'wind_mean_threshold', name: t('w_thr_u'), edit: true, int: true },
           { k: 'wind_gust_threshold', name: t('w_thr_g'), edit: true, int: true },
         ]),
       ]),
-      section([
+    wx: section([
         heading(t('wx'), 'mdi:weather-partly-cloudy'),
         rows(m, [
           { k: 'weather_feed', name: t('x_wsrc'), fmt: 'wsrc', refs: [E('weather_prefix'), E('rain_entity')].filter(Boolean) },
@@ -711,7 +739,7 @@ function settingsView(m, t) {
           { k: 'altitude', name: t('m_alt'), fmt: 'posv', ref: E('altitude_source') || undefined },
         ]),
       ]),
-      E('alarm_sound') && section([
+    buz: E('alarm_sound') && section([  // Waveshare only
         heading(t('buz'), 'mdi:volume-high'),
         rows(m, [
           { k: 'alarm_sound', name: t('buz'), fmt: 'buz', edit: true },
@@ -721,7 +749,7 @@ function settingsView(m, t) {
           { k: 'silence_alarm', name: t('silence'), edit: true },
         ]),
       ]),
-      section([
+    aux: section([
         heading(t('aux_def'), 'mdi:power-socket-eu'),
         rows(m, [
           { k: 'aux_label', name: t('aux_name'), edit: true },
@@ -730,7 +758,7 @@ function settingsView(m, t) {
           { k: 'aux_off_delay', name: t('aux_tof'), edit: true },
         ]),
       ]),
-      section([
+    sys: section([
         heading(t('s'), 'mdi:cog'),
         rows(m, [
           { k: 'units', name: t('units'), fmt: 'units', edit: true },
@@ -753,8 +781,8 @@ function settingsView(m, t) {
           { k: 'restart', name: t('restart_b'), confirm: t('x_restart_q'), edit: true },
         ]),
       ]),
-    ].filter(Boolean),  // the alarm section exists only on ws
   };
+  return tabbed(m, 'settings', [[t('zones'), m.zones.map(zone)], [t('wx'), [S.rain, S.wind, S.wx]], [t('aux_def'), [S.aux]], [t('s'), [S.sys, S.buz]]]);
 }
 
 // HACS cards load in parallel with this file: wait (max 5 s) for the ones listed as dashboard resources, so the
@@ -822,8 +850,9 @@ const CSS = `
   button.day.all.on{border-style:solid;border-color:var(--primary-color)}
   button{font:inherit;border:0;border-radius:6px;padding:6px 14px;cursor:pointer;background:var(--primary-color);color:var(--text-primary-color,#fff)}
   button.s{background:none;color:var(--primary-color);padding:2px 6px} button:disabled{opacity:.5;cursor:default}
-  button.up{width:28px;height:28px;padding:0;border-radius:50%;background:rgba(127,127,127,.18);color:var(--primary-text-color);font-size:12px}
-  button.up:disabled{visibility:hidden}
+  button.mv{width:32px;height:32px;padding:0;border-radius:50%;background:none;color:var(--secondary-text-color);display:inline-flex;
+    align-items:center;justify-content:center} button.mv:hover{background:rgba(127,127,127,.15);color:var(--primary-text-color)}
+  button.mv:disabled{visibility:hidden} .z label{flex:1;color:var(--primary-text-color)}
   .step{display:inline-flex;align-items:center;gap:6px}
   .step button{width:30px;height:30px;padding:0;border-radius:50%;background:rgba(127,127,127,.18);color:var(--primary-text-color)}
   .step span{min-width:3.2em;text-align:center;color:var(--primary-text-color)}
@@ -1144,14 +1173,15 @@ class IrryEditCard extends IrryCard {
 
 // The three slots of one zone, each saved as soon as it changes with esphome.<node>_set_slot
 // (atomic, the 3-zone rule checked by the firmware; refused -> the card shows the device values again).
+// Today's zone factor (%) while the method adapts the durations, else null.
+function zoneFactor(m, n) {
+  const meth = m.st('irrigation_method'), f = parseFloat(m.st(`zone_${n}_irrigation_factor`));
+  if (!meth || meth === 'none' || BAD.includes(meth) || m.st(`zone_${n}_plant_type`) === 'Not adapted' || isNaN(f)) return null;
+  return f;
+}
 class IrrySlotCard extends IrryEditCard {
   setConfig(c) { super.setConfig(c); this._open = new Set(); }
-  // Today's zone factor (%) while the method adapts the durations, else null.
-  factor() {
-    const m = this._m, n = this._c.zone, meth = m.st('irrigation_method'), f = parseFloat(m.st(`zone_${n}_irrigation_factor`));
-    if (!meth || meth === 'none' || BAD.includes(meth) || m.st(`zone_${n}_plant_type`) === 'Not adapted' || isNaN(f)) return null;
-    return f;
-  }
+  factor() { return zoneFactor(this._m, this._c.zone); }
   est(v) { const f = this.factor(); return f == null || !v.duration ? '' : `<span class="est">${esc(this._t('x_today_est', { min: Math.round((v.duration * f) / 100) }))}</span>`; }
   signature() {
     const m = this._m, n = this._c.zone;
@@ -1231,9 +1261,13 @@ class IrryRapidCard extends IrryEditCard {
     const t = this._t, r = this.shadowRoot, m = this._m;
     if (!m) return this.noDev();
     const so = [1, 2, 3].map((s) => `<option value="${s}"${s === this._slot ? ' selected' : ''}>${esc(t('slot'))} ${s}</option>`).join('');
+    // Order buttons: move the zone one place up / down (hidden where it cannot move).
+    const last = this._order.length - 1;
+    const mv = (i, d, k, path) => `<button class="mv" data-mv="${i}" data-d="${d}"${(d < 0 ? !i : i === last) ? ' disabled' : ''}`
+      + ` title="${esc(t(k))}" aria-label="${esc(t(k))}"><svg viewBox="0 0 24 24" width="20" height="20"><path d="${path}" fill="currentColor"/></svg></button>`;
     const zl = this._order.map((n, i) => `<div class="z">
       <label><input type="checkbox" data-zone="${n}"${this._inc.has(n) ? ' checked' : ''}> ${esc(m.label(n))}</label>
-      <button class="up" data-up="${i}"${i ? '' : ' disabled'} title="${esc(t('up'))}" aria-label="${esc(t('up'))}">▲</button></div>`).join('');
+      ${mv(i, -1, 'up', 'M7 14l5-5 5 5z')}${mv(i, 1, 'x_down', 'M7 10l5 5 5-5z')}</div>`).join('');
     const off = [1, 2, 3].filter((s) => s !== this._slot).map((s) =>
       `<label><input type="checkbox" data-off="${s}"${this._off.has(s) ? ' checked' : ''}> ${esc(t('turn_off_slot', { slot: s }))}</label>`).join('');
     r.innerHTML = `<style>${CSS}</style><ha-card><div class="wrap" style="padding-top:16px">
@@ -1248,9 +1282,9 @@ class IrryRapidCard extends IrryEditCard {
       if (el.checked) this._inc.add(+el.dataset.zone); else this._inc.delete(+el.dataset.zone);
       this._edit = true;
     }));
-    r.querySelectorAll('[data-up]').forEach((el) => el.addEventListener('click', () => {
-      const i = +el.dataset.up, o = this._order;
-      [o[i - 1], o[i]] = [o[i], o[i - 1]];
+    r.querySelectorAll('[data-mv]').forEach((el) => el.addEventListener('click', () => {
+      const i = +el.dataset.mv, j = i + +el.dataset.d, o = this._order;
+      [o[j], o[i]] = [o[i], o[j]];
       this._edit = true;
       this.paint();
     }));
@@ -1316,6 +1350,7 @@ const DAYCSS = `
   .tk{position:absolute;top:0;bottom:0;width:1px;background:var(--divider-color)}
   .ovw{position:absolute;top:0;bottom:0;background:rgba(255,152,0,.28);border-left:1px solid var(--warning-color,#ff9800);border-right:1px solid var(--warning-color,#ff9800)}
   .ovw.er{background:rgba(219,68,55,.25);border-color:var(--error-color)}
+  .ovw.po{background:rgba(255,152,0,.1);border-style:dashed;border-color:rgba(255,152,0,.7)}
   .ovs summary{cursor:pointer} .ovs ul{margin:6px 0 0;padding-left:18px}
   .zt{display:flex;justify-content:flex-end;margin-top:6px} .zt button{background:none;color:var(--primary-color);padding:2px 6px;font-size:12.5px}
   .tlr{display:flex;align-items:center;gap:8px;margin:7px 0}
@@ -1351,14 +1386,15 @@ class IrryDayCard extends IrryGetCard {
     const m = this._m;
     if (!m) return 'none';
     const td = devToday(this._h);
-    return JSON.stringify([this._l, this._g, this._full, td, this._ver, this.dark(), m.zones.map(m.label), devSlots(m), !!m.action('get')]);
+    return JSON.stringify([this._l, this._g, this._full, td, this._ver, this.dark(), m.zones.map(m.label), devSlots(m), !!m.action('get'),
+      m.zones.map((n) => zoneFactor(m, n))]);
   }
   paint() {
     const m = this._m, t = this._t, l = this._l, r = this.shadowRoot;
     if (!m) return this.noDev();
     const g = this._g, td = devToday(this._h), Z = devSlots(m), svc = !!m.action('get');
     const jr = g <= 0 ? this.hist(td.dn + g, td) : null, jy = g <= 0 ? this.hist(td.dn + g - 1, td) : null;
-    const D = dayModel(Z, g, td, jr && jr.r, jy && jy.r), dn = D.dn, nm = D.nm, HO = this._ho, zn = m.zones.map(m.label);
+    const D = dayModel(Z, g, td, jr && jr.r, jy && jy.r, m.zones.map((n) => zoneFactor(m, n))), dn = D.dn, nm = D.nm, HO = this._ho, zn = m.zones.map(m.label);
     // Range: first start - 1 h to last end + 1 h (at least 4 h), or the whole day.
     const all = D.rows.flatMap((x) => x.bars).filter((b) => b.b > b.a);
     let lo = 0, hi = 1440;
@@ -1380,7 +1416,7 @@ class IrryDayCard extends IrryGetCard {
       return `<i class="bar pl${b.past ? ' pa' : ''}" style="${pos}border-color:${c}"></i>`;
     };
     const ovw = (zi) => D.ov.filter((w) => w.zs.includes(zi) && w.b > lo && w.a < hi)
-      .map((w) => `<i class="ovw${w.zs.length > MAXO ? ' er' : ''}" style="left:${P(w.a)}%;width:${P(w.b) - P(w.a)}%"></i>`).join('');
+      .map((w) => `<i class="ovw${D.pos ? ' po' : w.zs.length > MAXO ? ' er' : ''}" style="left:${P(w.a)}%;width:${P(w.b) - P(w.a)}%"></i>`).join('');
     const tks = ticks.map((x) => (x > lo && x < hi ? `<i class="tk" style="left:${P(x)}%"></i>` : '')).join('');
     const tl = D.rows.map((x) => `<div class="tlr"><span class="n">${esc(zn[x.zi])}</span><div class="tlt">${tks}${ovw(x.zi)}${x.bars.map(one).join('')}`
       + `${nm < lo || nm >= hi ? '' : `<i class="nowl" style="left:${P(nm)}%"></i>`}</div></div>`).join('');
@@ -1413,10 +1449,16 @@ class IrryDayCard extends IrryGetCard {
       return `<button data-g="${gw + o}" class="${gw + o === g ? 'on' : ''}${gw + o ? '' : ' td'}">${esc(nar[(d + 3) % 7])}<small>${domOf(d)}</small></button>`; }).join('');
     const date = new Intl.DateTimeFormat(l, { weekday: 'short', day: 'numeric', month: 'long', timeZone: 'UTC' }).format(dn * 864e5);
     // Overlaps: one summary line, the windows in a fold and marked on the timeline.
+    // Today: the windows with the programmed durations (as the firmware warning) and those of the bars as drawn;
+    // later days: possible windows only (factor not known yet); past days: the real ones.
     const mx = D.ov.reduce((a, w) => Math.max(a, w.zs.length), 0);
-    const ov = D.ov.length ? `<ha-alert alert-type="${mx > MAXO ? 'error' : 'warning'}"><details class="ovs"><summary>${esc(t('x_ovl_sum',
-      { count: D.ov.length, max: mx }))}</summary><ul>${D.ov.map((w) => `<li>${esc(t('ovl_ban',
-      { count: w.zs.length, from: hm(w.a), to: hm(w.b), zones: w.zs.map((z) => zn[z]).join(', ') }))}</li>`).join('')}</ul></details></ha-alert>` : '';
+    const sum = D.pos ? t('x_ovl_pos', { count: D.ov.length })
+      : D.ovp ? `${t('x_ovl_pos', { count: D.ovp.length })}, ${t('x_ovl_today', { count: D.ov.length })}`
+        : t('x_ovl_sum', { count: D.ov.length, max: mx });
+    const at = D.pos || !D.ov.length ? 'info' : mx > MAXO ? 'error' : 'warning';
+    const wl = D.ov.length ? `<details class="ovs"><summary>${esc(sum)}</summary><ul>${D.ov.map((w) => `<li>${esc(t('ovl_ban',
+      { count: w.zs.length, from: hm(w.a), to: hm(w.b), zones: w.zs.map((z) => zn[z]).join(', ') }))}</li>`).join('')}</ul></details>` : esc(sum);
+    const ov = D.ov.length || (D.ovp && D.ovp.length) ? `<ha-alert alert-type="${at}">${wl}</ha-alert>` : '';
     // Legend: only what the timeline shows.
     const cs = new Set(all.map((b) => b.c)), sw = 'var(--secondary-text-color)';
     const lg = [1, 2, 3].filter((k) => cs.has(k)).map((k) => `<span><i style="background:var(--c${k})"></i>S${k}</span>`).join('')
@@ -1424,7 +1466,8 @@ class IrryDayCard extends IrryGetCard {
       + (all.some((b) => b.h && !b.tl) ? `<span><i style="background:${sw}"></i>${esc(t('h_real'))}</span>` : '')
       + (all.some((b) => !b.h && !b.tl) ? `<span><i style="border:2px solid ${sw}"></i>${esc(t('x_planned'))}</span>` : '')
       + (all.some((b) => b.tl) ? `<span><i style="${hatch(sw)}"></i>${esc(t('x_tail'))}</span>` : '')
-      + (D.ov.length ? `<span><i style="background:rgba(255,152,0,.4)"></i>${esc(t('ovl'))}</span>` : '');
+      + (D.ov.length ? (D.pos ? `<span><i style="background:rgba(255,152,0,.15);border:1px dashed var(--warning-color,#ff9800)"></i>${esc(t('x_ovl_poss'))}</span>`
+        : `<span><i style="background:rgba(255,152,0,.4)"></i>${esc(t('ovl'))}</span>`) : '');
     const zt = all.length && (zoomed || this._full) ? `<div class="zt"><button data-zoom>${esc(this._full ? t('x_zoom') : t('x_full_day'))}</button></div>` : '';
     const notes = `${!svc ? `<div class="note">${esc(t('x_no_svc'))}</div>` : ''}${D.real && jr.x ? `<div class="note">${esc(t('h_part'))}</div>` : ''}`;
     r.innerHTML = `<style>${CSS}${DAYCSS}</style><ha-card><div class="wrap${this.dark() ? ' dark' : ''}" style="padding-top:16px">
@@ -1445,12 +1488,74 @@ class IrryDayCard extends IrryGetCard {
 }
 
 // Last events of the device: the Last Event changes of the last 48 h from the HA history, in the user language.
-class IrryEventsCard extends IrryCard {
-  setConfig(c) { super.setConfig(c); this._ev = null; this._at = 0; this._key = null; }
+// Events of the last 48 h as rows. The zone events of the firmware ("Zone 6 avviata per 10 min", "Zone 6 terminata",
+// always in Italian, zone by number) make one row per irrigation; the history rows of the day (get hist) add the slot
+// and the outcome, and the irrigations with no event (skipped by rain or wind). Consecutive slot writes make one row.
+// ev = [{ s, at }] oldest first, H = { dn: history rows }; returns [{ k, dn, tm, txt }] newest first.
+function evModel(m, t, l, h, ev, H = {}, td = devToday(h)) {
+  const zl = (n) => { const v = m.st(`zone_${n}_label`); return v && !BAD.includes(v) ? v : t('x_zone_n', { n }); };
+  const zoneOf = (nm) => {
+    const g = nm.match(/^(?:Zone|Zona) (\d)$/);
+    if (g) return +g[1];
+    const x = m.zones.find((n) => m.st(`zone_${n}_label`) === nm);
+    return x || 0;
+  };
+  const key = (at) => { const d = devToday(h, at); return d.dn * 1440 + d.m; };
+  const out = [], open = {};
+  let set = null, g;
+  ev.forEach((x) => {
+    const k = key(x.at);
+    if ((g = x.s.match(/^(.+) avviata per (\d+) min$/)) && zoneOf(g[1])) { set = null; open[zoneOf(g[1])] = { z: zoneOf(g[1]), a: k }; return; }
+    if ((g = x.s.match(/^(.+) terminata$/)) && zoneOf(g[1])) {
+      const z = zoneOf(g[1]), o = open[z];
+      delete open[z];
+      set = null;
+      out.push({ z, a: o ? o.a : null, b: k });
+      return;
+    }
+    if ((g = x.s.match(/^Set slot Z(\d) S(\d)$/))) {
+      if (set && k - set.b <= 5) { set.zs.add(+g[1]); set.ss.add(+g[2]); set.b = k; } else out.push(set = { zs: new Set([+g[1]]), ss: new Set([+g[2]]), a: k, b: k });
+      return;
+    }
+    set = null;
+    out.push({ a: k, txt: eventText(m, t, l, x.s).replace(/\b(?:Zone|Zona) (\d)\b/g, (q, n) => zl(+n)) });
+  });
+  Object.values(open).forEach((o) => out.push({ z: o.z, a: o.a, b: null }));  // still open
+  // History rows: [start min, secs, zone, src, outcome, flags] of day dn.
+  const used = new Set(), hrow = [];
+  Object.entries(H).forEach(([dn, rs]) => (rs || []).forEach((x, i) => hrow.push({ id: `${dn}/${i}`, k: +dn * 1440 + x[0], x })));
+  const near = (u, v) => u != null && Math.abs(u - v) <= 2;
+  out.forEach((e) => {
+    if (e.z == null) return;
+    const r = hrow.find((q) => !used.has(q.id) && q.x[2] === e.z && !hsk(q.x[4])
+      && (near(e.a, q.k) || (e.a == null && near(e.b, q.k + Math.round(q.x[1] / 60)))));
+    if (r) { used.add(r.id); e.h = r.x; if (e.a == null) e.a = r.k; }
+  });
+  const now = td.dn * 1440 + td.m;
+  hrow.forEach((q) => { if (!used.has(q.id) && q.k >= now - 2880 && q.k <= now) out.push({ z: q.x[2], a: q.k, b: q.x[4] ? q.k + Math.round(q.x[1] / 60) : null, h: q.x }); });
+  const src = (x) => (x[3] >= 1 && x[3] <= 3 ? `S${x[3]}` : x[3] === 4 ? t('h_web') : 'HA');
+  const res = out.map((e) => {
+    const k = e.a != null ? e.a : e.b, dn = Math.floor(k / 1440);
+    if (e.zs) {
+      const ss = [...e.ss].sort().join(', ');
+      return { k, dn, tm: e.b > e.a ? `${hm(e.a)}–${hm(e.b)}` : hm(e.a), txt: t(e.ss.size > 1 ? K('x_ev_setn') : K('x_ev_set1'), { slots: ss, count: e.zs.size }) };
+    }
+    if (e.z == null) return { k, dn, tm: hm(e.a), txt: e.txt };
+    const x = e.h, o = x && x[4] > 1 ? t(HOUT[x[4]] || `h_o${x[4]}`) : '';
+    if (x && hsk(x[4])) return { k, dn, tm: hm(e.a), txt: [zl(e.z), src(x), o].join(' · ') };
+    const mins = x && x[4] ? Math.round(x[1] / 60) : e.a != null && e.b != null ? e.b - e.a : null;
+    const tm = `${e.a != null ? hm(e.a) : '…'}–${e.b != null ? hm(e.b) : ''}`;
+    return { k, dn, tm, txt: [zl(e.z), e.b == null ? t('in_prog') : mins != null && fmin(t, mins), x && src(x), o].filter(Boolean).join(' · ') };
+  });
+  return res.sort((p, q) => q.k - p.k);
+}
+class IrryEventsCard extends IrryGetCard {
+  setConfig(c) { super.setConfig(c); this._ev = null; this._at = 0; this._key = null; this._all = false; }
   signature() {
-    const s = this._m && this._m.so('last_event');
+    const m = this._m, s = m && m.so('last_event');
     if (!s) return 'none';
-    return JSON.stringify([this._l, s.state, s.last_changed, this._ev && this._ev.length, this._at]);
+    return JSON.stringify([this._l, s.state, s.last_changed, this._at, this._ver, this._all, devToday(this._h).dn,
+      m.zones.map((n) => m.st(`zone_${n}_label`))]);
   }
   load() {
     const s = this._m && this._m.so('last_event'), id = this._m && this._m.E('last_event');
@@ -1463,21 +1568,36 @@ class IrryEventsCard extends IrryCard {
       .then((r) => {
         this._ev = ((r && r[id]) || []).map((x) => ({ s: x.s != null ? x.s : x.state,
           at: x.lu != null ? new Date(x.lu * 1000) : new Date(x.last_updated || x.last_changed) }))
-          .filter((x) => x.s && !BAD.includes(x.s)).reverse();
+          .filter((x) => x.s && !BAD.includes(x.s) && !isNaN(x.at));
       })
       .catch(() => { this._ev = []; })
       .finally(() => { this._at = Date.now(); this._sig = ''; if (this._h) this.hass = this._h; });
   }
+  // History of today and yesterday, fetched again when Last Event changes.
+  hists(td) {
+    const age = this._hk === this._key ? 600e3 : 0, H = {};
+    this._hk = this._key;
+    [td.dn, td.dn - 1].forEach((dn) => { const j = this.got('hist', dn, age); if (j && Array.isArray(j.r)) H[dn] = j.r; });
+    return H;
+  }
   paint() {
     const t = this._t, m = this._m, r = this.shadowRoot;
     if (!m) return this.noDev();
-    const s = m.so('last_event'), c = this.ctx();
+    const s = m.so('last_event');
     let ev = this._ev || [];
-    if (!this._ev && s && !BAD.includes(s.state))  // the history is not there yet
-      ev = [{ s: s.state, at: new Date(s.last_changed || s.last_updated) }, ...ev];
-    const rows = ev.slice(0, 30).map((x) => `<div class="r"><span class="v" style="flex:1;text-align:left;max-width:none">${esc(eventText(m, t, this._l, x.s))}</span>`
-      + `<span class="n" style="flex:none;white-space:nowrap">${esc(fmtTime(x.at, c))}</span></div>`).join('');
-    r.innerHTML = `<style>${CSS}</style><ha-card><div class="wrap">${rows || `<div class="note">${esc(t('x_ev_none'))}</div>`}</div></ha-card>`;
+    const at = s && new Date(s.last_changed || s.last_updated || Date.now());
+    if (!this._ev && s && !BAD.includes(s.state) && !isNaN(at)) ev = [...ev, { s: s.state, at }];  // the history is not there yet
+    const td = devToday(this._h), L = evModel(m, t, this._l, this._h, ev, this.hists(td), td), dy = dayNames(this._l);
+    const all = this._all && L.length > 5;
+    const rows = (all ? L : L.slice(0, 5)).map((x) => `<div class="r"><span class="tm">${x.dn !== td.dn ? `${esc(dy[(x.dn + 3) % 7])} ` : ''}`
+      + `${esc(x.tm)}</span><span class="ev">${esc(x.txt)}</span></div>`).join('');
+    const more = L.length > 5 ? `<button class="s more">${esc(all ? t('x_ev_less') : `${t('x_ev_all')} (${L.length})`)}</button>` : '';
+    r.innerHTML = `<style>${CSS}
+      .tm{flex:none;min-width:7.5em;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;white-space:nowrap}
+      .ev{flex:1;color:var(--primary-text-color)} .more{margin:4px 0 0 -6px}</style>`
+      + `<ha-card><div class="rows">${rows || `<div class="note">${esc(t('x_ev_none'))}</div>`}${more}</div></ha-card>`;
+    const b = r.querySelector('.more');
+    if (b) b.onclick = () => { this._all = !all; this._sig = ''; this.hass = this._h; };
   }
 }
 
@@ -1580,6 +1700,7 @@ const EDUP = [[/^temp[fc]$/, 'weather_temperature'], [/^humidity$/, 'weather_hum
   [/^baromrel/, 'weather_pressure_sea_level'], [/^(dailyrain|drain_piezo)/, 'weather_rain_today'], [/^(rainrate|rrain_piezo)/, 'weather_rain_rate'],
   [/^(eventrain|erain_piezo)/, 'weather_rain_event'], [/^last24hrain/, 'rain_last_24h'], [/^windspeed/, 'weather_wind_speed'],
   [/^windspd.*avg10m$/, 'wind_mean_10_min'], [/^windgust/, 'weather_wind_gust'], [/^winddir$/, 'weather_wind_direction'],
+  [/^winddir_avg10m$/, 'weather_wind_direction', 1],  // 1: dropped as well, one wind direction per dashboard
   [/^solarradiation$/, 'weather_solar_radiation'], [/^uv$/, 'weather_uv_index'], [/^tempin[fc]$/, 'weather_indoor_temperature'],
   [/^humidityin$/, 'weather_indoor_humidity'], [/^soilmoisture([1-4])$/, 'weather_soil_moisture_$1'], [/^pm25_ch1$/, 'weather_pm2_5'],
   [/^lightning$/, 'weather_lightning_distance'], [/^lightning_num$/, 'weather_lightning_count']];
@@ -1592,7 +1713,7 @@ function ecoGroups(c, f, psl, dup) {
     if (r && r[1] == null) continue;
     if (!r) { g[EGU].push([k, String(f[k])]); continue; }
     const d = dup && EDUP.find((e) => e[0].test(k)), dk = d && d[1].replace('$1', (k.match(d[0]) || [])[1] || '');
-    if (d && !gone[dk] && dup(dk)) { gone[dk] = 1; continue; }
+    if (d && (!gone[dk] || d[2]) && dup(dk)) { gone[dk] = 1; continue; }
     const ch = (k.match(r[0]) || [])[1], cc = r[1] === 3 || r[1] === 4 || /^(pm25_|leak_|depth_)/.test(k) ? ch : '';
     const id = `${r[2]}|${r[4] || ''}|${cc || ''}|${r[1] === 5 && !cc ? ch : ''}`;
     if (r[2] && seen[id]) continue;
@@ -1748,6 +1869,67 @@ class IrryNotesCard extends IrryGetCard {
   }
 }
 
+// In-card tabs (no HACS dependency): tabs = [{ name, sections: [[card, ...], ...] }], the chosen tab remembered per
+// browser. Each section is a column of the grid; tiles go two per row, the other cards take the column width.
+// The child cards are HA cards made by loadCardHelpers(), created when their tab is first shown.
+const TABCSS = `
+  :host{display:block} .bar{display:flex;gap:4px;padding:4px;margin:0 0 12px;border-radius:12px;background:rgba(127,127,127,.14);
+    overflow-x:auto;scrollbar-width:none}
+  .bar button{flex:1 0 auto;font:inherit;font-weight:500;font-size:14px;border:0;border-radius:9px;padding:8px 14px;cursor:pointer;
+    background:none;color:var(--secondary-text-color);white-space:nowrap}
+  .bar button[aria-selected=true]{background:var(--card-background-color,#fff);color:var(--primary-text-color);
+    box-shadow:0 1px 3px rgba(0,0,0,.2)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,340px),1fr));gap:16px;align-items:start}
+  .sec{display:grid;grid-template-columns:1fr 1fr;gap:8px;min-width:0} .sec>*{grid-column:span 2;min-width:0} .sec>.t{grid-column:span 1}`;
+class IrryTabsCard extends HTMLElement {
+  setConfig(c) { this._c = c || {}; this._el = {}; this._tab = null; this._r = 0; }
+  getCardSize() { return 12; }
+  getGridOptions() { return { columns: 'full' }; }
+  key() { return `irry.tab.${this._c.view || ''}`; }
+  saved() { try { return +localStorage.getItem(this.key()) || 0; } catch (e) { return 0; } }
+  set hass(h) {
+    this._h = h;
+    Object.values(this._el).forEach((x) => x.forEach((s) => s.forEach((e) => { e.hass = h; })));
+    if (!this.shadowRoot) { this.attachShadow({ mode: 'open' }); this.show(this.saved()); }
+  }
+  tabs() { return (this._c && this._c.tabs) || []; }
+  async show(i) {
+    const tb = this.tabs(), t = tb[i] ? i : 0, r = this.shadowRoot;
+    this._tab = t;
+    try { localStorage.setItem(this.key(), String(t)); } catch (e) { /* private mode */ }
+    r.innerHTML = `<style>${TABCSS}</style>${tb.length > 1 ? `<div class="bar" role="tablist">${tb.map((x, k) => `<button role="tab" data-i="${k}"
+      aria-selected="${k === t}">${esc(x.name)}</button>`).join('')}</div>` : ''}<div class="grid"></div>`;
+    r.querySelectorAll('.bar button').forEach((b) => { b.onclick = () => { if (+b.dataset.i !== this._tab) this.show(+b.dataset.i); }; });
+    if (!tb[t]) return;
+    const run = ++this._r;
+    if (!this._el[t]) {
+      const hp = typeof window.loadCardHelpers === 'function' ? await window.loadCardHelpers() : null;
+      if (!hp || run !== this._r) return;
+      this._el[t] = tb[t].sections.map((cs) => cs.map((cfg) => this.make(hp, cfg)));
+    }
+    const g = r.querySelector('.grid');
+    this._el[t].forEach((cs) => {
+      const sec = document.createElement('div');
+      sec.className = 'sec';
+      cs.forEach((e) => sec.appendChild(e));
+      g.appendChild(sec);
+    });
+  }
+  make(hp, cfg) {
+    const e = hp.createCardElement(cfg);
+    if (cfg.type === 'tile') e.classList.add('t');
+    if (this._h) e.hass = this._h;
+    // HA asks for a new element when a card definition loads late (custom cards): replace it in place.
+    e.addEventListener('ll-rebuild', (ev) => {
+      ev.stopPropagation();
+      const n = this.make(hp, cfg);
+      Object.values(this._el).forEach((x) => x.forEach((s) => { const k = s.indexOf(e); if (k >= 0) s[k] = n; }));
+      e.replaceWith(n);
+    }, { once: true });
+    return e;
+  }
+}
+
 const def = (n, c) => customElements.get(n) || customElements.define(n, c);
 def('ll-strategy-dashboard-irry-the-seven', IrryDashboardStrategy);
 def('ll-strategy-view-irry-status', IrryStatusStrategy);
@@ -1765,6 +1947,7 @@ def('irry-coef-card', IrryCoefCard);
 def('irry-cal-card', IrryCalCard);
 def('irry-notes-card', IrryNotesCard);
 def('irry-events-card', IrryEventsCard);
+def('irry-tabs-card', IrryTabsCard);
 window.customCards = window.customCards || [];
 window.customCards.push(
   { type: 'irry-rapid-card', name: 'Irry Rapid', description: 'Same start and duration, zones one after another' },
@@ -1777,10 +1960,11 @@ window.customCards.push(
   { type: 'irry-cal-card', name: 'Irry calibration', description: 'Reference ET0 and Calibrate' },
   { type: 'irry-events-card', name: 'Irry events', description: 'Last events of the device, in the user language' },
   { type: 'irry-notes-card', name: 'Irry release notes', description: 'Link to the notes of the offered firmware' },
+  { type: 'irry-tabs-card', name: 'Irry tabs', description: 'Sections of an Irry view behind tabs (used by the dashboard)' },
 );
 console.info(`%c IRRY THE SEVEN %c ${IRRY_VERSION} `, 'background:#2e7d32;color:#fff', '');
 if (typeof module !== 'undefined') {
   module.exports = { irryModel, statusView, irrigationView, weatherView, settingsView, alerts, tr, slug, errText, ovlText,
-    eventText, fwText, fmtState, devValue, toUnit, I18N, dayView, dayModel, devSlots, devToday, runs, ovDay, getCall, irryGet, hm, dnOf,
-    ecoGroups, IrryDayCard, IrryEcoCard, IrryCoefCard, IrryCalCard, IrryNotesCard, IrryEventsCard };
+    eventText, fwText, fmtState, devValue, toUnit, I18N, dayView, dayModel, devSlots, devToday, evModel, zoneHead, runs, ovDay, getCall, irryGet, hm, dnOf,
+    ecoGroups, IrryDayCard, IrryEcoCard, IrryCoefCard, IrryCalCard, IrryNotesCard, IrryEventsCard, IrryTabsCard };
 }

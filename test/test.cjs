@@ -63,11 +63,16 @@ function refs(o, out = []) {
   const de = await reg['ll-strategy-dashboard-irry-the-seven'].generate({ language: 'de', device: 'Irry The Seven 8dee48' }, fakeHass());
   ok(de.views[0].title === 'Status' && de.views[1].title === 'Bewässerung', 'language override');
   const v = await reg['ll-strategy-view-irry-weather'].generate({}, fakeHass());
-  ok(v.sections.length === 6, `weather view strategy ${v.sections.length}`);
+  // Weather and Settings: one section holding the tabs card; tabs[].sections = the former view sections.
+  const tabsOf = (vw) => vw.sections.length === 1 && vw.sections[0].cards[0].type === 'custom:irry-tabs-card' ? vw.sections[0].cards[0].tabs : null;
+  const cardsOf = (vw) => vw.sections.flatMap((x) => x.cards || []).flatMap((c) => (c.tabs ? c.tabs.flatMap((tb) => tb.sections.flat()) : [c]));
+  const wt = tabsOf(v);
+  ok(wt && wt.map((x) => x.name).join() === 'Attuale,Grafici,Ecowitt' && wt.map((x) => x.sections.length).join() === '2,3,1', `weather tabs ${JSON.stringify(wt && wt.map((x) => [x.name, x.sections.length]))}`);
+  ok(cardsOf(v).some((x) => x.type === 'statistics-graph' && x.hide_legend && !/\(/.test(x.title)), 'rain chart: no legend suffix');
   // windrose-card 2.7 wants exactly one of data_period or an active period_selector button.
   reg['windrose-card'] = class {};
   const vr = await reg['ll-strategy-view-irry-weather'].generate({}, fakeHass());
-  const rose = JSON.parse(JSON.stringify(vr)).sections.flatMap((x) => x.cards || []).find((x) => x.type === 'custom:windrose-card');
+  const rose = cardsOf(JSON.parse(JSON.stringify(vr))).find((x) => x.type === 'custom:windrose-card');
   const act = rose ? (rose.buttons_config?.buttons || []).filter((x) => x.type === 'period_selector' && x.active).length : -1;
   ok(rose && (!!rose.data_period) !== (act === 1) && act <= 1, `windrose period: data_period ${!!rose?.data_period}, active ${act}`);
   delete reg['windrose-card'];
@@ -79,7 +84,9 @@ function refs(o, out = []) {
   ok(vl.includes('custom:windrose-card'), 'windrose registered late is kept');
   delete reg['windrose-card'];
   const sv = await reg['ll-strategy-view-irry-settings'].generate({}, fakeHass());
-  ok(sv.sections.length === 7 + 6, `settings view strategy ${sv.sections.length}`);
+  const stb = tabsOf(sv);
+  ok(stb && stb.map((x) => `${x.name}:${x.sections.length}`).join() === 'Zone:7,Meteo:3,Aux:1,Sistema:2', `settings tabs ${stb && stb.map((x) => `${x.name}:${x.sections.length}`)}`);
+  ok(JSON.stringify(stb[0].sections[0]).includes('"heading":"Zona 1 · Prato"') && JSON.stringify(stb[0].sections[1]).includes('"heading":"Zona 2"'), 'zone titles: index and name');
   // Weather view without the station: no weather tab.
   const nw = fakeHass();
   for (const k of Object.keys(nw.entities)) if (/weather_(temperature|wind_speed)$/.test(k)) delete nw.entities[k];
@@ -117,8 +124,9 @@ function refs(o, out = []) {
   const h8 = fakeHass({ x8: true }), d8 = await reg['ll-strategy-dashboard-irry-the-seven'].generate({}, h8), j8 = JSON.stringify(d8);
   ok(refs(d8).every((e) => h8.states[e]), 'x8: every entity exists');
   ok(!/alarm_sound|quiet_from|silence_alarm/.test(j8) && /find_device/.test(j8), 'x8: no buzzer, Find Device kept');
-  const s8 = (await reg['ll-strategy-view-irry-settings'].generate({}, h8)).sections.length;
-  ok(s8 === 7 + 5, `x8: settings without the alarm section ${s8}`);
+  const s8 = tabsOf(await reg['ll-strategy-view-irry-settings'].generate({}, h8)).map((x) => x.sections.length).join();
+  ok(s8 === '7,3,1,1', `x8: settings without the alarm section ${s8}`);
+  ok(lib.I18N.it.x_find_led === 'Il LED lampeggia per 10 s' && !/buzz|cical/i.test(lib.I18N.en.x_find_led + lib.I18N.it.x_find_led), 'x8: Find note without the buzzer');
   const jw = JSON.stringify(await reg['ll-strategy-dashboard-irry-the-seven'].generate({}, fakeHass()));
   ok(/alarm_sound/.test(jw) && /silence_alarm/.test(jw) && /quiet_to/.test(jw), 'ws: alarm entities');
   // Day plan: Mon 2026-11-02 10:00. Zone 1 Mon/Wed 06:00 10 min, zone 2 every 3 days from 11-02 06:10, zone 3 even
@@ -145,6 +153,36 @@ function refs(o, out = []) {
   ok(D.rows[0].bars[0].h === 1 && D.rows[2].bars.some((b) => !b.h && !b.tl), 'history bars flagged, plan bars not');
   ok(lib.dayModel(Z, -1, td, jy.r, null).list.length === 1 && lib.dayModel(Z, -5, td, null, null).none, 'past days');
   ok(lib.getCall(lib.irryModel({ ...hd, services: { esphome: {} } }), 'notes') === null, 'no get service');
+  // Overlaps: zone 2 every day 06:05 15 min on zone 1 Mon/Wed 06:00 10 min. Today with zone 1 at 50 %: 06:00-06:05,
+  // no real overlap (1 with the programmed durations); Wednesday: 1 possible overlap.
+  const Zo = JSON.parse(JSON.stringify(Z));
+  Object.assign(Zo[1].s[0], { t: 365, dm: 0, m: [1, 1, 1, 1, 1, 1, 1] });
+  const Do = lib.dayModel(Zo, 0, td, null, null, [50]);
+  ok(Do.ov.length === 0 && Do.ovp.length === 1 && !Do.pos && Do.rows[0].bars[0].b === 365, `overlaps today: ${JSON.stringify([Do.ov, Do.ovp])}`);
+  const Dp = lib.dayModel(Zo, 2, td, null, null, [50]);
+  ok(Dp.pos && Dp.ov.length === 1 && Dp.ov[0].a === 365 && Dp.ov[0].b === 370, `possible overlaps: ${JSON.stringify(Dp.ov)}`);
+  ok(lib.dayModel(Zo, 0, td, null, null).ov.length === 1, 'today with no factor: the programmed durations');
+  // Events: start/end pair = one row with the zone name, slot and outcome from the history; slot writes grouped;
+  // a skip from the history only; zone numbers in the texts replaced by the names.
+  const he = fakeHass(), me = lib.irryModel(he), now = Date.now(), at = (min) => new Date(Math.floor(now / 60e3) * 60e3 - min * 60e3);
+  const k0 = lib.devToday(he, at(120)), k9 = lib.devToday(he, at(30));
+  const He = { [k0.dn]: [[k0.m, 600, 1, 1, 1, 0]] };
+  He[k9.dn] = [...(He[k9.dn] || []), [k9.m, 0, 4, 1, 9, 0]];
+  const ev = [{ s: 'Zone 1 avviata per 10 min', at: at(120) }, { s: 'Zone 1 terminata', at: at(110) }, { s: 'Set slot Z1 S1', at: at(100) },
+    { s: 'Set slot Z2 S1', at: at(99) }, { s: 'Set slot Z3 S2', at: at(98) }, { s: 'Zone 2 terminata', at: at(60) },
+    { s: 'Set slot Z2 S2 refused: limit', at: at(50) }, { s: 'Zone 3 avviata per 5 min', at: at(2) }];
+  const EV = lib.evModel(me, t, 'it', he, ev, He).map((x) => `${x.tm} ${x.txt}`);
+  const hmA = (min) => lib.hm(lib.devToday(he, at(min)).m);
+  const want = [`${hmA(2)}– Zona 3 · ${t('in_prog')}`, `${hmA(30)} Zona 4 · S1 · ${t('h_o9')}`, `${hmA(50)} Zona 2 · ${t('slot')} 2: ${t('e_limit')}`,
+    `…–${hmA(60)} Zona 2`, `${hmA(100)}–${hmA(98)} Slot 1, 2 scritti su 3 zone`, `${hmA(120)}–${hmA(110)} Prato · 10 min · S1`];
+  ok(JSON.stringify(EV) === JSON.stringify(want), `events model ${JSON.stringify(EV)} != ${JSON.stringify(want)}`);
+  // Status: zones as Open / Closed rows, wind thresholds in whole units.
+  const sj = await reg['ll-strategy-view-irry-status'].generate({}, fakeHass());
+  const zr = sj.sections.flatMap((x) => x.cards).find((x) => x.type === 'custom:irry-rows-card' && x.rows.some((r) => /zone_1_manual$/.test(r.entity)));
+  ok(zr && zr.rows.find((r) => /zone_1_manual$/.test(r.entity)).fmt === 'open' && !JSON.stringify(sj).includes('"type":"tile","entity":"switch.network_irry_the_seven_8dee48_zone_1_manual"'), 'status: zones open / closed');
+  const hw = fakeHass(), cw = { h: hw, m: lib.irryModel(hw), t, l: 'it' };
+  const wr = sj.sections.flatMap((x) => x.cards).flatMap((x) => x.rows || []).find((r) => /wind_mean_10_min$/.test(r.entity));
+  ok(lib.fmtState('pair', hw.states[wr.entity], cw, wr) === '12,6 / 18 km/h', `wind pair ${lib.fmtState('pair', hw.states[wr.entity], cw, wr)}`);
   // Ecowitt raw fields: groups, piezo label, battery names, sea-level pressure from the device, unknown fields.
   const ce = { h: hd, m: md, t, l: 'it' };
   const G = lib.ecoGroups(ce, { tempf: '64.4', humidity: '60', baromrelin: '29.9', soilmoisture2: '41', wh65batt: '0',
@@ -192,7 +230,7 @@ function refs(o, out = []) {
       ok(html.length > 0 || name === 'cal', `${name} card painted`);
       if (name === 'day') ok(html.includes(t('h_o7')) && html.includes('nowl') && html.includes('tlt'), 'day card: badge, now-line, timeline');
       if (name === 'coef') ok(html.includes(t('m_hist')) && html.includes('3,4') && html.includes(t('x_all_zones')), 'coef card: rain of the last days, all zones');
-      if (name === 'events') ok(html.includes(lib.eventText(lib.irryModel(hc), t, 'it', 'Set slot Z1 S2')) && !html.includes('Rapid S1'), `events card ${html.replace(/<style>[^]*<\/style>/, "")}`);
+      if (name === 'events') ok(html.includes(t('x_ev_set1', { slots: '2', count: 1 })) && html.includes(t('applied', { slot: 1, count: 3 })) && !html.includes('Rapid S1'), `events card ${html.replace(/<style>[^]*<\/style>/, "")}`);
       if (name === 'notes') ok(html.includes('https://example.com/n'), 'notes card: link');
       if (name === 'eco') ok(html.includes(t('es_g_out')) && html.includes('12 s'), 'eco card: groups and age');
     } catch (e) { ok(false, `${name} card: ${e.stack}`); }
