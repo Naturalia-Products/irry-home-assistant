@@ -12,7 +12,7 @@
 // Units: the device "Units" select (Auto = from the time zone), as in the device UI; HA sensor values
 // are converted from whatever unit HA shows them in. Graphs keep the HA unit.
 
-const IRRY_VERSION = '0.3.6';
+const IRRY_VERSION = '0.3.7';
 const I18N = /*I18N*/ {} /*END*/;
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -105,7 +105,8 @@ function index(hass, dev) {
 const IMPZ = /^(America\/(New_York|Chicago|Denver|Los_Angeles|Phoenix|Anchorage|Juneau|Sitka|Nome|Yakutat|Metlakatla|Adak|Boise|Detroit|Menominee|Indiana\/|Kentucky\/|North_Dakota\/)|Pacific\/Honolulu|US\/|Africa\/Monrovia|Asia\/(Yangon|Rangoon))/;
 
 // Model of one device: entity lookup E(key), states, zones, labels, units, action names.
-function irryModel(hass, want) {
+// l: language of the texts (an unnamed zone is "Zone N" in it), default the HA user language.
+function irryModel(hass, want, l) {
   const dev = pickDevice(hass, want);
   if (!dev) return null;
   const { E } = index(hass, dev);
@@ -116,7 +117,8 @@ function irryModel(hass, want) {
   const r8 = st('r8_mode'), z7 = r8 !== 'Aux', aux = r8 !== 'Zone 7';
   const zones = [];
   for (let n = 1; n <= 8; n++) if (E(`zone_${n}_manual`) && (n !== 7 || z7)) zones.push(n);
-  const label = (n) => { const v = st(`zone_${n}_label`); return v && !BAD.includes(v) ? v : `Zone ${n}`; };
+  const zt = tr(l || lang(hass));
+  const label = (n) => { const v = st(`zone_${n}_label`); return v && !BAD.includes(v) ? v : zt('x_zone_n', { n }); };
   const un = st('units');
   const imp = un === 'Imperial' || (un !== 'Metric' && IMPZ.test((hass.config && hass.config.time_zone) || ''));
   const mac = ((dev.connections || []).find((c) => c[0] === 'mac') || [])[1];
@@ -806,7 +808,7 @@ async function hacsReady(hass) {
 const VIEWS = { status: statusView, irrigation: irrigationView, day: dayView, weather: weatherView, settings: settingsView };
 class IrryViewStrategy {
   static view(kind, config, hass) {
-    const t = tr(lang(hass, config)), m = irryModel(hass, config && config.device);
+    const t = tr(lang(hass, config)), m = irryModel(hass, config && config.device, lang(hass, config));
     if (!m) return noDevice(t);
     return VIEWS[kind](m, t, config || {});
   }
@@ -818,7 +820,7 @@ class IrryWeatherStrategy extends HTMLElement { static async generate(c, h) { aw
 class IrrySettingsStrategy extends HTMLElement { static async generate(c, h) { return IrryViewStrategy.view('settings', c, h); } }
 class IrryDashboardStrategy extends HTMLElement {
   static async generate(config, hass) {
-    const t = tr(lang(hass, config)), m = irryModel(hass, config && config.device);
+    const t = tr(lang(hass, config)), m = irryModel(hass, config && config.device, lang(hass, config));
     if (!m) return { title: 'Irry', views: [{ title: 'Irry', path: 'irry', ...noDevice(t) }] };
     const views = [
       { title: t('st'), path: 'status', icon: 'mdi:sprinkler-variant', ...statusView(m, t) },
@@ -883,8 +885,8 @@ class IrryCard extends HTMLElement {
   getGridOptions() { return { columns: 'full' }; }
   set hass(h) {
     this._h = h;
-    this._m = irryModel(h, this._c.device);
     this._l = lang(h, this._c);
+    this._m = irryModel(h, this._c.device, this._l);
     this._t = tr(this._l);
     if (!this.shadowRoot) this.attachShadow({ mode: 'open' });
     if (this.busy()) return;  // keep what the user is editing
@@ -973,6 +975,8 @@ class IrryBannerCard extends IrryCard {
   }
 }
 
+// Conditional row (only: { entity, state }): shown while that entity has that state (or one of a list).
+function rowShown(h, row) { return !row.only || [].concat(row.only.state).includes((h.states[row.only.entity] || {}).state); }
 // Rows: { entity, name, fmt, edit, hide_empty, ref, refs, confirm } or { head }.
 // Read-only rows open the HA more-info dialog; edit rows write with the entity's own service.
 class IrryRowsCard extends IrryCard {
@@ -989,7 +993,7 @@ class IrryRowsCard extends IrryCard {
     if (!this._m) return this.noDev();
     const avail = (row) => ((h.states[row.ref] || {}).state || '').match(/^(\S+) available/);
     const list = (this._c.rows || []).map((row, i) => ({ row, i, s: row.entity && h.states[row.entity] }))
-      .filter(({ row }) => !row.only || [].concat(row.only.state).includes((h.states[row.only.entity] || {}).state))
+      .filter(({ row }) => rowShown(h, row))
       .filter(({ row, s }) => row.head || row.note || row.value || (s && !(row.hide_empty && (BAD.includes(s.state) || s.state === '-'))))
       .filter(({ row }) => row.fmt !== 'fwgo' || avail(row));
     const html = [];
@@ -1380,6 +1384,16 @@ const hatch = (c) => `background:repeating-linear-gradient(135deg,${c} 0 2px,tra
 const dcol = (c) => (c ? `var(--c${c})` : 'var(--secondary-text-color)');
 
 // Day: the device Day tab. Plan from the slot entities, history from get hist (today and yesterday every minute).
+// Timeline range in minutes: first start - 1 h to last end + 1 h on whole hours (at least 4 h), or the whole day.
+function dayRange(bars, full) {
+  let lo = 0, hi = 1440;
+  if (!full && bars.length) {
+    lo = Math.max(0, Math.floor((Math.min(...bars.map((b) => b.a)) - 60) / 60) * 60);
+    hi = Math.min(1440, Math.ceil((Math.max(...bars.map((b) => b.b)) + 60) / 60) * 60);
+    if (hi - lo < 240) { const c = Math.round((lo + hi) / 120) * 60; lo = Math.max(0, Math.min(c - 120, 1200)); hi = lo + 240; }
+  }
+  return [lo, hi];
+}
 class IrryDayCard extends IrryGetCard {
   setConfig(c) { super.setConfig(c); this._g = 0; this._ho = null; }
   hist(dn, td) {
@@ -1400,14 +1414,7 @@ class IrryDayCard extends IrryGetCard {
     const g = this._g, td = devToday(this._h), Z = devSlots(m), svc = !!m.action('get');
     const jr = g <= 0 ? this.hist(td.dn + g, td) : null, jy = g <= 0 ? this.hist(td.dn + g - 1, td) : null;
     const D = dayModel(Z, g, td, jr && jr.r, jy && jy.r, m.zones.map((n) => zoneFactor(m, n))), dn = D.dn, nm = D.nm, HO = this._ho, zn = m.zones.map(m.label);
-    // Range: first start - 1 h to last end + 1 h (at least 4 h), or the whole day.
-    const all = D.rows.flatMap((x) => x.bars).filter((b) => b.b > b.a);
-    let lo = 0, hi = 1440;
-    if (!this._full && all.length) {
-      lo = Math.max(0, Math.floor((Math.min(...all.map((b) => b.a)) - 60) / 60) * 60);
-      hi = Math.min(1440, Math.ceil((Math.max(...all.map((b) => b.b)) + 60) / 60) * 60);
-      if (hi - lo < 240) { const c = Math.round((lo + hi) / 120) * 60; lo = Math.max(0, Math.min(c - 120, 1200)); hi = lo + 240; }
-    }
+    const all = D.rows.flatMap((x) => x.bars).filter((b) => b.b > b.a), [lo, hi] = dayRange(all, this._full);
     const zoomed = lo > 0 || hi < 1440, sp = hi - lo, P = (x) => ((Math.min(hi, Math.max(lo, x)) - lo) / sp) * 100;
     const stp = [60, 120, 180, 240, 360].find((v) => sp / v <= 8) || 360;
     const ticks = []; for (let x = Math.ceil(lo / stp) * stp; x <= hi; x += stp) ticks.push(x);
@@ -1763,6 +1770,19 @@ class IrryEcoCard extends IrryGetCard {
   }
 }
 
+// Zone lines of the coefficients: one line for the value most zones share, then only the zones that differ;
+// zones with no slot enabled are left out (all zones when none is enabled). [[name, value], ...]
+function coefLines(m, t, l) {
+  const pc = (k) => { const v = parseFloat(m.st(k)); return isNaN(v) ? '-' : `${nf(v, 0, l)} %`; };
+  const zt = (n) => (m.st(`zone_${n}_plant_type`) === 'Not adapted' ? t('m_pt_none')
+    : pc(`zone_${n}_irrigation_factor`) + (m.st(`zone_${n}_sheltered_from_rain`) === 'on' ? ` · ${t('m_sh')}` : '')
+    + (m.st(`zone_${n}_sheltered_from_wind`) === 'on' ? ` · ${t('m_wx')}` : ''));
+  const on = m.zones.filter((n) => [1, 2, 3].some((k) => slotFrom(m, n, k).enabled)), zs = on.length ? on : m.zones;
+  const cnt = {}; zs.forEach((n) => { cnt[zt(n)] = (cnt[zt(n)] || 0) + 1; });
+  const top = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0];
+  if (zs.length > 1 && cnt[top] > 1) return [[t('x_all_zones'), top], ...zs.filter((n) => zt(n) !== top).map((n) => [m.label(n), zt(n)])];
+  return zs.map((n) => [m.label(n), zt(n)]);
+}
 // Coefficients: today's factors (entities, as the device Weather → Coefficients) and the rain of the last days (get mhist 1).
 class IrryCoefCard extends IrryGetCard {
   signature() {
@@ -1783,15 +1803,7 @@ class IrryCoefCard extends IrryGetCard {
     if (!meth || meth === 'none' || BAD.includes(meth)) b = `<div class="note">${esc(t('wx_c_off'))}</div>`;
     else {
       b = `<div class="h">${esc(t('m_res'))}</div>${kv(t('m_f'), pc('irrigation_factor'))}`;
-      // One line for the value most zones share, then only the zones that differ; zones with no slot enabled are left out.
-      const zt = (n) => (m.st(`zone_${n}_plant_type`) === 'Not adapted' ? t('m_pt_none')
-        : pc(`zone_${n}_irrigation_factor`) + (m.st(`zone_${n}_sheltered_from_rain`) === 'on' ? ` · ${t('m_sh')}` : '')
-        + (m.st(`zone_${n}_sheltered_from_wind`) === 'on' ? ` · ${t('m_wx')}` : ''));
-      const on = m.zones.filter((n) => [1, 2, 3].some((k) => slotFrom(m, n, k).enabled)), zs = on.length ? on : m.zones;
-      const cnt = {}; zs.forEach((n) => { cnt[zt(n)] = (cnt[zt(n)] || 0) + 1; });
-      const top = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0];
-      if (zs.length > 1 && cnt[top] > 1) b += kv(t('x_all_zones'), top) + zs.filter((n) => zt(n) !== top).map((n) => kv(m.label(n), zt(n))).join('');
-      else b += zs.map((n) => kv(m.label(n), zt(n))).join('');
+      b += coefLines(m, t, l).map(([k, v]) => kv(k, v)).join('');
       const wd = m.so('weather_data'), e0 = m.so('irrigation_et0_yesterday');
       if (wd) b += kv(t('m_data'), wd.state === 'missing' ? t('m_q_missing') : fmtState('wdata', wd, c));
       if (e0) b += kv(t('m_et0y'), fmtState('', e0, c));
@@ -1852,7 +1864,7 @@ class IrryCalCard extends IrryCard {
     try { await h.callService('button', 'press', {}, { entity_id: m.E('irrigation_calibrate') }); } catch (e) { return this.say(errText(m, t, this._l, e), 'err'); }
     this.say(t('x_saving'), '');
     await new Promise((res) => setTimeout(res, 3000));
-    const m2 = irryModel(this._h, this._c.device), e0 = m2.st('irrigation_et0_yesterday');
+    const m2 = irryModel(this._h, this._c.device, this._l), e0 = m2.st('irrigation_et0_yesterday');
     const ok = m2.st('irrigation_reference_et0') !== before || !(e0 == null || BAD.includes(e0));
     this.say(t(ok ? 'saved' : 'e_nodata'), ok ? 'ok' : 'err');
   }
@@ -1984,5 +1996,6 @@ console.info(`%c IRRY THE SEVEN %c ${IRRY_VERSION} `, 'background:#2e7d32;color:
 if (typeof module !== 'undefined') {
   module.exports = { irryModel, statusView, irrigationView, weatherView, settingsView, alerts, tr, slug, errText, ovlText,
     eventText, fwText, fmtState, devValue, toUnit, I18N, dayView, dayModel, devSlots, devToday, evModel, zoneHead, runs, ovDay, getCall, irryGet, hm, dnOf,
-    ecoGroups, IrryDayCard, IrryEcoCard, IrryCoefCard, IrryCalCard, IrryNotesCard, IrryEventsCard, IrryTabsCard };
+    ecoGroups, IrryDayCard, IrryEcoCard, IrryCoefCard, IrryCalCard, IrryNotesCard, IrryEventsCard, IrryTabsCard,
+    hacsReady, hour24, unitDec, fmtTime, dayRange, rowShown, coefLines, zoneFactor, IrryRowsCard, IrrySlotCard, IrryRapidCard };
 }

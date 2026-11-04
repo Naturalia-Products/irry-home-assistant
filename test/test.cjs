@@ -53,7 +53,7 @@ function refs(o, out = []) {
   const m = lib.irryModel(h);
   ok(m.E('valve_power') === id, 'renamed entity by suffix');
   ok(m.E('irrigation_factor') === 'sensor.network_irry_the_seven_8dee48_irrigation_factor', 'shortest suffix wins');
-  ok(m.zones.length === 7 && m.label(1) === 'Prato' && m.label(2) === 'Zone 2', 'zones and labels');
+  ok(m.zones.length === 7 && m.label(1) === 'Prato' && m.label(2) === 'Zona 2', 'zones and labels');
   ok(m.action('rapid') === 'it7ws_8dee48_rapid' && m.action('set_slot') === 'it7ws_8dee48_set_slot', 'actions by mac');
   ok(lib.irryModel(fakeHass({ zones: 4 })).zones.length === 4, '4 zones');
   // No device, language override, device option.
@@ -108,7 +108,7 @@ function refs(o, out = []) {
   for (const l of Object.keys(lib.I18N)) ok(Object.keys(lib.I18N[l]).length === Object.keys(lib.I18N.en).length, `${l} complete`);
   // Firmware error text.
   const e = lib.errText(m, t, 'it', new Error('limit mon 2026-11-02 06:00-06:10 1,2,3,4'));
-  ok(e.includes('4 zone') && e.includes('06:00–06:10') && e.includes('Prato, Zone 2, Zone 3, Zone 4'), e);
+  ok(e.includes('4 zone') && e.includes('06:00–06:10') && e.includes('Prato, Zona 2, Zona 3, Zona 4'), e);
   ok(lib.errText(m, t, 'it', new Error('limit tue 06:00-06:10 1,2,3,4')).includes('mar'), 'weekday error');
   ok(lib.errText(m, t, 'it', new Error('bad zone')) === 'Errore: bad zone', 'generic error');
   // States and units in the device words.
@@ -258,13 +258,211 @@ function refs(o, out = []) {
       card.setConfig({}); card.hass = hc;
       await new Promise((r) => setImmediate(r));
       card.hass = hc;
-      ok(html.length > 0 || name === 'cal', `${name} card painted`);
+      ok(html.length > 0, `${name} card painted`);
       if (name === 'day') ok(html.includes(t('h_o7')) && html.includes('nowl') && html.includes('tlt'), 'day card: badge, now-line, timeline');
       if (name === 'coef') ok(html.includes(t('m_hist')) && html.includes('3,4') && html.includes(t('x_all_zones')), 'coef card: rain of the last days, all zones');
       if (name === 'events') ok(html.includes(t('x_ev_set1', { slots: '2', count: 1 })) && html.includes(t('applied', { slot: 1, count: 3 })) && !html.includes('Rapid S1'), `events card ${html.replace(/<style>[^]*<\/style>/, "")}`);
       if (name === 'notes') ok(html.includes('https://example.com/n'), 'notes card: link');
       if (name === 'eco') ok(html.includes(t('es_g_out')) && html.includes('12 s'), 'eco card: groups and age');
     } catch (e) { ok(false, `${name} card: ${e.stack}`); }
+  }
+  // ---------------------------------------------------------------- 0.3.x functions: pure helpers and card methods.
+  // Card on a stub shadow root: paint() output in html(), controls as plain objects.
+  const mk = (cls, cfg, hh) => {
+    const card = new cls(); let html = '';
+    card.style = {}; card.dispatchEvent = () => {};
+    card.attachShadow = () => { card.shadowRoot = { activeElement: null, set innerHTML(v) { html = v; }, get innerHTML() { return html; },
+      querySelector: () => el(), querySelectorAll: () => [] }; return card.shadowRoot; };
+    card.setConfig(cfg); card.hass = hh;
+    return { card, html: () => html };
+  };
+  const tick = () => new Promise((r) => setImmediate(r));
+  const sset = (hh, name, state, attributes) => {
+    const id = Object.keys(hh.entities).find((i) => hh.entities[i].name === name);
+    hh.states[id] = { entity_id: id, state, attributes: attributes || hh.states[id].attributes };
+  };
+  // hacsReady: resources unreadable or with no HACS card listed: no wait.
+  {
+    const keep = [reg['windrose-card'], reg['mini-graph-card']];
+    delete reg['windrose-card']; delete reg['mini-graph-card'];
+    const t0 = Date.now();
+    await lib.hacsReady({ callWS: () => Promise.reject(new Error('no')) });
+    await lib.hacsReady({ callWS: () => Promise.resolve([]) });
+    await lib.hacsReady({ callWS: () => Promise.resolve([{ url: '/local/other.js' }]) });
+    const hr = fakeHass(); hr.callWS = () => Promise.reject(new Error('no'));
+    const vr = JSON.stringify(await reg['ll-strategy-view-irry-weather'].generate({}, hr));
+    ok(Date.now() - t0 < 200 && !vr.includes('windrose-card') && vr.includes('irry-tabs-card'), `hacsReady: no resources, no wait (${Date.now() - t0} ms)`);
+    if (keep[0]) reg['windrose-card'] = keep[0];
+    if (keep[1]) reg['mini-graph-card'] = keep[1];
+  }
+  // Rows card writes: each domain with its own service, on the row entity; invalid text and a cancelled confirm write nothing.
+  {
+    const hw2 = fakeHass(), mw = lib.irryModel(hw2), E = mw.E;
+    const sw2 = JSON.stringify(await reg['ll-strategy-view-irry-settings'].generate({}, hw2));
+    const thr = { entity: E('wind_mean_threshold'), edit: true, int: true };
+    const R = [{ entity: E('programs_paused'), edit: true }, { entity: E('units'), edit: true },
+      { entity: E('weather_prefix'), edit: true, pat: '^sensor\\.[a-z0-9_]+$' }, { entity: E('quiet_from'), edit: true },
+      { entity: E('restart'), edit: true, confirm: 'Restart?' }, thr];
+    const { card } = mk(lib.IrryRowsCard, { rows: R }, hw2);
+    const fe = (value, x = {}) => ({ value, blur() {}, classList: { add(c) { x.bad = c; } }, ...x });
+    const last = () => hw2.calls[hw2.calls.length - 1];
+    const W = async (row, e) => { const n0 = hw2.calls.length; await card.write(row, e); return hw2.calls.length > n0 ? last() : null; };
+    const cs = [];
+    cs.push(await W(R[0], fe('', { checked: true })), await W(R[1], fe('Metric')), await W(R[3], fe('06:30')));
+    const bad = {}; const cbad = await W(R[2], fe('Sensor X', bad)), cgood = await W(R[2], fe('sensor.ws_2350'));
+    global.window.confirm = () => false; const cno = await W(R[4], fe(''));
+    global.window.confirm = () => true; const cyes = await W(R[4], fe(''));
+    const sig = (c) => c && `${c.domain}.${c.service} ${JSON.stringify(c.data)} ${c.target && c.target.entity_id}`;
+    ok(sig(cs[0]) === `switch.turn_on {} ${E('programs_paused')}` && sig(cs[1]) === `select.select_option {"option":"Metric"} ${E('units')}`
+      && sig(cs[2]) === `time.set_value {"time":"06:30:00"} ${E('quiet_from')}`, `rows write: switch, select, time ${cs.map(sig)}`);
+    ok(!cbad && bad.bad === 'bad' && sig(cgood) === `text.set_value {"value":"sensor.ws_2350"} ${E('weather_prefix')}`, 'rows write: text pattern');
+    ok(!cno && sig(cyes) === `button.press {} ${E('restart')}`, 'rows write: button confirm');
+    // Wind thresholds: whole km/h (mph) on screen, written in m/s on the entity step, within its range.
+    const ctl = card.control('number', thr, hw2.states[thr.entity], 5, 'x');
+    const nv = [];
+    for (const v of ['20', '19,5', '200', '-3']) nv.push((await W(thr, fe(v))).data.value);
+    const hi2 = fakeHass(); sset(hi2, 'Units', 'Imperial');
+    const ci = mk(lib.IrryRowsCard, { rows: [thr] }, hi2).card;
+    const ctli = ci.control('number', thr, hi2.states[thr.entity], 0, 'x');
+    await ci.write(thr, fe('12'));
+    const swr = tabsOf(JSON.parse(sw2)).flatMap((x) => x.sections.flat()).flatMap((x) => x.rows || []).filter((r) => /wind_(mean|gust)_threshold$/.test(r.entity));
+    ok(swr.length === 2 && swr.every((r) => r.edit && r.int), 'settings: wind threshold rows edit, whole units');
+    ok(ctl.includes('value="18"') && ctl.includes('step="1"') && ctl.includes('km/h') && ctli.includes('value="11"') && ctli.includes('mph'), `wind threshold control ${ctl} / ${ctli}`);
+    ok(nv.join() === '5.6,5.4,25.5,0' && hi2.calls[0].data.value === 5.4 && hi2.calls[0].target.entity_id === thr.entity, `wind threshold write ${nv} / ${hi2.calls[0].data.value}`);
+  }
+  // Conditional rows (B4): the rain entity fields without an Ecowitt feed, the Ecowitt note with one; quiet hours only in that mode.
+  {
+    const hb = fakeHass(), cfgs = tabsOf(await reg['ll-strategy-view-irry-settings'].generate({}, hb)).flatMap((x) => x.sections.flat())
+      .filter((x) => x.type === 'custom:irry-rows-card').flatMap((x) => x.rows);
+    const shown = () => cfgs.filter((r) => r.only && lib.rowShown(hb, r)).map((r) => (r.entity ? r.entity.replace(/^.*\./, '') : 'eco_note'));
+    sset(hb, 'Weather Feed', 'none'); sset(hb, 'Alarm Sound', 'On'); const s1 = shown().join();
+    sset(hb, 'Weather Feed', 'ok'); sset(hb, 'Alarm Sound', 'Quiet Hours'); const s2 = shown().join();
+    sset(hb, 'Weather Feed', 'unavailable'); const s3 = shown().join();
+    const p = 'network_irry_the_seven_8dee48_';
+    ok(s1 === `${p}rain_entity,${p}rain_attribute,${p}weather_prefix` && s2 === `eco_note,${p}quiet_from,${p}quiet_to`
+      && s3.startsWith(`${p}rain_entity`), `conditional rows ${s1} / ${s2} / ${s3}`);
+    const rc = mk(lib.IrryRowsCard, { rows: cfgs.filter((r) => r.only && r.entity) }, hb);
+    ok(rc.html().includes(t('rain_ent')) && rc.html().includes(t('buz_from')), 'conditional rows painted');
+  }
+  // Effective duration today (B7): the slot duration scaled by the zone factor; nothing when the method does not adapt.
+  {
+    const he7 = fakeHass(); sset(he7, 'Zone 1 Irrigation Factor', '80');
+    const sc = mk(lib.IrrySlotCard, { zone: 1 }, he7).card, e10 = sc.est({ duration: 10 }), e0 = sc.est({ duration: 0 });
+    sset(he7, 'Zone 1 Plant Type', 'Not adapted'); const ena = sc.est({ duration: 10 });
+    sset(he7, 'Zone 1 Plant Type', 'Cool-season lawn'); sset(he7, 'Irrigation Method', 'none'); const eno = sc.est({ duration: 10 });
+    ok(e10.includes(t('x_today_est', { min: 8 })) && e0 === '' && ena === '' && eno === '', `slot effective duration ${e10}|${e0}|${ena}|${eno}`);
+  }
+  // Rapid card: the zones in use (no zone 7 in Aux mode), move buttons off at the ends, the action data, the limit refusal.
+  {
+    const hr8 = fakeHass({ r8: 'Aux' }), rp = mk(lib.IrryRapidCard, {}, hr8), rh = rp.html(), rc = rp.card;
+    const zs = [...rh.matchAll(/data-zone="(\d)"/g)].map((x) => x[1]).join();
+    ok(zs === '1,2,4,3,5,6' && /data-mv="0" data-d="-1" disabled/.test(rh) && /data-mv="5" data-d="1" disabled/.test(rh)
+      && !/data-mv="0" data-d="1" disabled/.test(rh) && !/data-mv="5" data-d="-1" disabled/.test(rh), `rapid card zones ${zs}`);
+    await rc.go();
+    const g1 = hr8.calls[hr8.calls.length - 1];
+    rc._v.mode = 'every'; rc._v.every_n = 3; rc._v.from = '2026-11-02'; rc._inc.add(5);
+    await rc.go();
+    const g2 = hr8.calls[hr8.calls.length - 1];
+    hr8.fail = 'limit mon 06:00-06:10 1,2,7';
+    await rc.go();
+    ok(g1.service === 'it7ws_8dee48_rapid' && g1.data.zones === '1,2,4,3' && g1.data.mode === 'week' && g1.data.days === 'mon,wed'
+      && g1.data.every_n === 0 && g1.data.from === '' && g1.data.slot === 1 && g1.data.start === '06:00' && g1.data.duration === 10, `rapid go ${JSON.stringify(g1.data)}`);
+    ok(g2.data.zones === '1,2,4,3,5' && g2.data.mode === 'every' && g2.data.every_n === 3 && g2.data.from === '2026-11-02' && g2.data.days === '', `rapid go every ${JSON.stringify(g2.data)}`);
+    const lm = rc._msgs.r;
+    ok(lm.cls === 'err' && lm.text === lib.errText(lib.irryModel(hr8), t, 'it', new Error(hr8.fail)) && lm.text.includes(t('x_zone_n', { n: 2 })) && !lm.text.includes('7'), `rapid limit ${lm.text}`);
+  }
+  // Events: slot writes more than 5 min apart are two rows; a zone with no name is "Zona N".
+  {
+    const hv = fakeHass(), mv = lib.irryModel(hv), now2 = Date.now(), at2 = (min) => new Date(Math.floor(now2 / 60e3) * 60e3 - min * 60e3);
+    const E2 = lib.evModel(mv, t, 'it', hv, [{ s: 'Set slot Z1 S1', at: at2(30) }, { s: 'Set slot Z2 S1', at: at2(20) },
+      { s: 'Zone 2 avviata per 5 min', at: at2(10) }, { s: 'Zone 2 terminata', at: at2(5) }], {}).map((x) => x.txt);
+    ok(E2.length === 3 && E2[0].startsWith(`${t('x_zone_n', { n: 2 })} · `) && E2[1] === E2[2] && E2[1] === t('x_ev_set1', { slots: '1', count: 1 }), `events: separate writes ${JSON.stringify(E2)}`);
+  }
+  // Day card overlaps: a later day shows the possible ones (dashed), today with the zone factor the real and programmed counts.
+  {
+    const ho = fakeHass();
+    for (const d of ['1-Mon', '2-Tue', '3-Wed', '4-Thu', '5-Fri', '6-Sat', '7-Sun']) { sset(ho, `Zone 1 S1 ${d}`, 'on'); sset(ho, `Zone 2 S1 ${d}`, 'on'); }
+    sset(ho, 'Zone 2 S1 Start', '06:05:00'); sset(ho, 'Zone 2 S1 Days Mode', 'Weekdays');
+    const dl = mk(lib.IrryDayCard, {}, ho); dl.card._g = 2; dl.card._sig = ''; dl.card.hass = ho; await tick();
+    const ph = dl.html();
+    sset(ho, 'Zone 1 Irrigation Factor', '50');
+    const d0 = mk(lib.IrryDayCard, {}, ho); await tick(); const th = d0.html();
+    ok(ph.includes('class="ovw po"') && ph.includes(t('x_ovl_pos', { count: 1 })) && ph.includes(t('x_ovl_poss')), 'day card: possible overlaps on a later day');
+    ok(th.includes(`${t('x_ovl_pos', { count: 1 })}, ${t('x_ovl_today', { count: 0 })}`) && !th.includes('class="ovw'), 'day card today: 0 real, 1 programmed');
+  }
+  // Timeline range: 1 h around the bars on whole hours, at least 4 h, up to 24:00; the whole day with no bar or when asked.
+  {
+    const R2 = (bars, full) => lib.dayRange(bars, full).join('-');
+    ok(R2([{ a: 360, b: 385 }]) === '300-540' && R2([{ a: 1430, b: 1460 }]) === '1200-1440' && R2([]) === '0-1440'
+      && R2([{ a: 360, b: 385 }], true) === '0-1440' && R2([{ a: 0, b: 30 }]) === '0-240' && R2([{ a: 300, b: 420 }, { a: 900, b: 960 }]) === '240-1020',
+    `day range ${R2([{ a: 360, b: 385 }])} ${R2([{ a: 1430, b: 1460 }])} ${R2([{ a: 0, b: 30 }])} ${R2([{ a: 300, b: 420 }, { a: 900, b: 960 }])}`);
+  }
+  // Tabs card grid: rows of the lead layout from the number of zones (7: 3 rows, Aux mode 6: 2 rows).
+  {
+    const gr2 = async (hh) => { const cfg = (await reg['ll-strategy-view-irry-irrigation'].generate({}, hh)).sections[0].cards[0];
+      const ls = global.localStorage; global.localStorage = { getItem: () => null, setItem() {} };
+      const tc = mk(lib.IrryTabsCard, cfg, hh); global.localStorage = ls; return (tc.html().match(/grid lead" style="--rows:(\d)/) || [])[1]; };
+    const g7 = await gr2(fakeHass()), g6 = await gr2(fakeHass({ r8: 'Aux' }));
+    ok(g7 === '3' && g6 === '2', `tabs lead rows ${g7} / ${g6}`);
+  }
+  // R8 Mode with no valid state: both zone 7 and Aux, as with no R8 Mode entity.
+  {
+    const mu = lib.irryModel(fakeHass({ r8: 'unavailable' }));
+    ok(mu.zones.length === 7 && mu.aux, 'R8 Mode unavailable: zone 7 and Aux');
+  }
+  // Clock and graph decimals: HA profile time format, else the language; decimals of the HA unit.
+  {
+    const sys = ['h23', 'h24'].includes(new Intl.DateTimeFormat(undefined, { hour: 'numeric' }).resolvedOptions().hourCycle);
+    ok(lib.hour24({ locale: { time_format: '24', language: 'en' } }) === true && lib.hour24({ locale: { time_format: '12', language: 'it' } }) === false
+      && lib.hour24({ locale: { time_format: 'language', language: 'it' } }) === true && lib.hour24({ locale: { time_format: 'language', language: 'en' } }) === false
+      && lib.hour24({ locale: { time_format: 'system', language: 'it' } }) === sys && lib.hour24({}) === false, 'hour24');
+    const hd2 = fakeHass(); sset(hd2, 'Weather Pressure', '29.92', { unit_of_measurement: 'inHg' }); sset(hd2, 'Weather Pressure Sea Level', '30.01', { unit_of_measurement: 'inHg' }); sset(hd2, 'Weather Humidity', '60', { unit_of_measurement: '%' });
+    const md2 = lib.irryModel(hd2);
+    const ud = ['weather_temperature', 'weather_pressure', 'weather_humidity', 'weather_wind_speed', 'weather_uv_index'].map((k) => lib.unitDec(md2, k)).join();
+    const mg = reg['mini-graph-card']; reg['mini-graph-card'] = class {};
+    const wj = JSON.stringify(await reg['ll-strategy-view-irry-weather'].generate({}, hd2));
+    if (mg) reg['mini-graph-card'] = mg; else delete reg['mini-graph-card'];
+    ok(ud === "1,2,0,1,0" && wj.includes("\"hour24\":true") && wj.includes("\"decimals\":2"), `unit decimals ${ud} ${(wj.match(/"(hour24|decimals)":\w+/g) || []).join()}`);
+  }
+  // Coefficients (B5): the shared value once, then the zones that differ; zones with no slot enabled left out.
+  {
+    const hk = fakeHass(), mkm = () => lib.irryModel(hk), L = () => lib.coefLines(mkm(), t, 'it').map((x) => x.join(': ')).join(' | ');
+    for (let z = 1; z <= 7; z++) sset(hk, `Zone ${z} Irrigation Factor`, '80');
+    const k1 = L();
+    sset(hk, 'Zone 2 Irrigation Factor', '90'); const k2 = L();
+    [1, 2, 3, 4].forEach((z, i) => sset(hk, `Zone ${z} Irrigation Factor`, String(60 + i * 10))); const k3 = L();
+    sset(hk, 'Zone 4 Plant Type', 'Not adapted'); sset(hk, 'Zone 3 Sheltered from Rain', 'on'); const k4 = L();
+    ok(k1 === `${t('x_all_zones')}: 80 %`, `coef: one shared value ${k1}`);
+    ok(k2 === `${t('x_all_zones')}: 80 % | Zona 2: 90 %`, `coef: one zone differs ${k2}`);
+    ok(k3 === 'Prato: 60 % | Zona 2: 70 % | Zona 3: 80 % | Zona 4: 90 %', `coef: all differ, zones with no slot left out ${k3}`);
+    ok(k4 === `Prato: 60 % | Zona 2: 70 % | Zona 3: 80 % · ${t('m_sh')} | Zona 4: ${t('m_pt_none')}`, `coef: sheltered, not adapted ${k4}`);
+    sset(hk, 'Irrigation Method', 'none');
+    const kc = mk(lib.IrryCoefCard, {}, hk); await tick();
+    ok(kc.html().includes(t('wx_c_off')) && !kc.html().includes(t('x_all_zones')), 'coef card: method off');
+  }
+  // Banner wind texts: resume after the window -> the skip; resume inside it -> resume and window end; waiting zones.
+  {
+    const hwp = fakeHass(), cwp = () => ({ h: hwp, m: lib.irryModel(hwp), t, l: 'it' }), now3 = Date.now();
+    const iso = (min) => new Date(now3 + min * 60e3).toISOString();
+    sset(hwp, 'Wind Pause', 'paused'); sset(hwp, 'Wind Resume', iso(30.5)); sset(hwp, 'Wind Skip At', iso(20.5)); sset(hwp, 'Wind Paused Zones', '1,2'); sset(hwp, 'Wind Waiting Zones', '');
+    const a1 = lib.alerts(lib.irryModel(hwp), cwp()).map((x) => x[1]);
+    sset(hwp, 'Wind Skip At', iso(45.5)); const a2 = lib.alerts(lib.irryModel(hwp), cwp()).map((x) => x[1]);
+    sset(hwp, 'Wind Pause', 'waiting'); sset(hwp, 'Wind Waiting Zones', '2'); const a3 = lib.alerts(lib.irryModel(hwp), cwp()).map((x) => x[1]);
+    const ft = (min) => lib.fmtTime(iso(min), cwp());
+    ok(a1.includes([t('wp'), t('wp_skip', { time: ft(20.5) }), t('wp_zs', { list: 'Prato, Zona 2' })].join(' · ')), `banner wind skip ${JSON.stringify(a1)}`);
+    ok(a2.some((x) => x.startsWith(`${t('wp')} · `) && x.includes(` · ${t('wp_win', { time: ft(45.5) })}`) && !x.includes(t('wp_skip', { time: ft(45.5) }))), `banner wind resume ${JSON.stringify(a2)}`);
+    ok(a3.includes(`${t('ww')} · ${t('ww_zs', { list: 'Zona 2' })}`), `banner wind waiting ${JSON.stringify(a3)}`);
+  }
+  // Calibration card: painted with the reference ET0, its value written on the entity step, Calibrate pressed.
+  {
+    const hc2 = fakeHass(), mc = lib.irryModel(hc2), cc = mk(lib.IrryCalCard, {}, hc2), ch = cc.html();
+    await cc.card.setEtr({ value: '5,64', blur() {} });
+    const st0 = global.setTimeout; global.setTimeout = (f) => { f(); return 0; };
+    try { await cc.card.cal(); } finally { global.setTimeout = st0; }
+    const [c1, c2] = hc2.calls;
+    ok(ch.includes('data-etr') && ch.includes('value="5"') && ch.includes(t('m_cal')), `cal card painted ${ch.length}`);
+    ok(c1 && c1.service === 'set_value' && c1.data.value === 5.6 && c1.target.entity_id === mc.E('irrigation_reference_et0')
+      && c2 && c2.domain === 'button' && c2.target.entity_id === mc.E('irrigation_calibrate') && cc.card._msg.text === t('saved'), `cal card writes ${JSON.stringify(hc2.calls)}`);
   }
   console.log(`test.cjs: ${n} checks, ${fail} failed`);
   process.exit(fail ? 1 : 0);
