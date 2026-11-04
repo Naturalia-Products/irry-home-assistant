@@ -12,7 +12,7 @@
 // Units: the device "Units" select (Auto = from the time zone), as in the device UI; HA sensor values
 // are converted from whatever unit HA shows them in. Graphs keep the HA unit.
 
-const IRRY_VERSION = '0.3.5';
+const IRRY_VERSION = '0.3.6';
 const I18N = /*I18N*/ {} /*END*/;
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -109,10 +109,13 @@ function irryModel(hass, want) {
   const dev = pickDevice(hass, want);
   if (!dev) return null;
   const { E } = index(hass, dev);
-  const zones = [];
-  for (let n = 1; n <= 8; n++) if (E(`zone_${n}_manual`)) zones.push(n);
   const so = (k) => { const id = E(k); return id ? hass.states[id] : undefined; };
   const st = (k) => { const s = so(k); return s ? s.state : undefined; };
+  // R8 Mode (family A): zone 7 and Aux share the output; the entities of the mode not chosen exist but are inert,
+  // so they are left out everywhere, as the device UI does. No R8 Mode entity, or no valid state: show both.
+  const r8 = st('r8_mode'), z7 = r8 !== 'Aux', aux = r8 !== 'Zone 7';
+  const zones = [];
+  for (let n = 1; n <= 8; n++) if (E(`zone_${n}_manual`) && (n !== 7 || z7)) zones.push(n);
   const label = (n) => { const v = st(`zone_${n}_label`); return v && !BAD.includes(v) ? v : `Zone ${n}`; };
   const un = st('units');
   const imp = un === 'Imperial' || (un !== 'Metric' && IMPZ.test((hass.config && hass.config.time_zone) || ''));
@@ -123,7 +126,7 @@ function irryModel(hass, want) {
     const mine = m6 ? all.filter((s) => s.includes(m6)) : [];
     return mine[0] || (all.length === 1 ? all[0] : null);
   };
-  return { h: hass, dev, E, so, st, zones, label, imp, action };
+  return { h: hass, dev, E, so, st, zones, label, imp, action, aux };
 }
 
 // ---------------------------------------------------------------- values in the device words and units
@@ -315,7 +318,7 @@ function errText(m, t, l, e) {
   const g = msg.match(/limit (\w{3})(?: (\d{4})-(\d\d)-(\d\d))? (\d\d:\d\d)-(\d\d:\d\d) ([\d,]+)/);
   if (!g) return msg === 'limit' ? t('e_limit') : t('e_generic', { err: msg });
   const when = g[2] ? dateText(l, g[2], g[3], g[4]) : dayNames(l)[DAYS.indexOf(g[1])];
-  const zs = g[7].split(',');
+  const zs = g[7].split(',').filter((z) => m.zones.includes(+z));
   return t('e_limit_at', { count: zs.length, when, from: g[5], to: g[6], zones: zs.map((z) => m.label(+z)).join(', ') });
 }
 // Overlap Warning "2 zones tue 2026-11-03 06:11-06:20 1,2" -> "mar 3 nov · <the device UI banner text>".
@@ -323,7 +326,7 @@ function ovlText(m, t, l, s) {
   const g = String(s).match(/^(\d+) zones (\w{3})(?: (\d{4})-(\d\d)-(\d\d))? (\d\d:\d\d)-(\d\d:\d\d) ([\d,]+)/);
   if (!g) return s;
   const when = g[3] ? dateText(l, g[3], g[4], g[5]) : dayNames(l)[DAYS.indexOf(g[2])];
-  return `${when} · ${t('ovl_ban', { count: +g[1], from: g[6], to: g[7], zones: g[8].split(',').map((z) => m.label(+z)).join(', ') })}`;
+  return `${when} · ${t('ovl_ban', { count: +g[1], from: g[6], to: g[7], zones: g[8].split(',').filter((z) => m.zones.includes(+z)).map((z) => m.label(+z)).join(', ') })}`;
 }
 // Last Event: the firmware writes the zone events in the device language, the HA action results in English.
 function eventText(m, t, l, s) {
@@ -437,11 +440,11 @@ function zoneHead(m, t, n) {
 }
 // One view section holding the in-card tabs card: tabs = [[id, name, [section, ...]], ...], empty tabs dropped.
 // The id (stable, not the position) is what the browser remembers; def = tab shown when nothing is remembered.
-function tabbed(m, view, tabs, def) {
+function tabbed(m, view, tabs, def, layout) {
   const tb = tabs.map(([id, name, ss]) => ({ id, name, sections: ss.filter(Boolean).map((x) => x.cards) })).filter((x) => x.sections.length);
   return {
     type: 'sections', max_columns: 4,
-    sections: [section([{ type: 'custom:irry-tabs-card', device: m.dev.id, view, tabs: tb, ...(def ? { default: def } : {}), grid_options: { columns: 'full' } }], { column_span: 4 })],
+    sections: [section([{ type: 'custom:irry-tabs-card', device: m.dev.id, view, tabs: tb, ...(def ? { default: def } : {}), ...(layout ? { layout } : {}), grid_options: { columns: 'full' } }], { column_span: 4 })],
   };
 }
 
@@ -475,7 +478,7 @@ function statusView(m, t) {
           name: t('wind_ign'), icon: 'mdi:weather-windy', hide_state: true, tap_action: press(E('ignore_wind')),
           visibility: [{ condition: 'state', entity: E('wind_pause'), state_not: ['off', ...BAD] }],
         }),
-        has('aux') && tile(E('aux'), { name: auxName && !BAD.includes(auxName) ? auxName : t('aux_def'), tap_action: toggle }),
+        m.aux && has('aux') && tile(E('aux'), { name: auxName && !BAD.includes(auxName) ? auxName : t('aux_def'), tap_action: toggle }),
         // Buttons: no state line (HA would show the last press, or "Unknown").
         has('find_device') && tile(E('find_device'), { name: t('find'), icon: 'mdi:map-marker-radius-outline', hide_state: true, tap_action: press(E('find_device')) }),
         // Waveshare only (x8 has no beeper); no entity tells whether an alarm sounds, so it is always shown.
@@ -524,17 +527,16 @@ function irrigationView(m, t) {
     ]),
     { type: 'custom:irry-slot-card', device: dev, zone: n, grid_options: { columns: 'full' } },
   ]);
-  return {
-    type: 'sections', max_columns: 4,
-    sections: [
-      section([
-        heading(t('r'), 'mdi:flash'),
-        rows(m, [{ k: 'irrigation_overlap_warning', name: t('ovl'), fmt: 'ovl', hide_empty: true }]),
-        { type: 'custom:irry-rapid-card', device: dev, grid_options: { columns: 'full' } },
-      ]),
-      ...m.zones.map(zone),
-    ],
-  };
+  // Rapid alone in the first column, zones in row order on the other three (Z1 Z2 Z3 / Z4 Z5 Z6 / Z7): the sections
+  // view packs columns by height, so the layout is the tabs card's own grid ("lead"), one tab and no bar.
+  return tabbed(m, 'irrigation', [['all', t('r'), [
+    section([
+      heading(t('r'), 'mdi:flash'),
+      rows(m, [{ k: 'irrigation_overlap_warning', name: t('ovl'), fmt: 'ovl', hide_empty: true }]),
+      { type: 'custom:irry-rapid-card', device: dev, grid_options: { columns: 'full' } },
+    ]),
+    ...m.zones.map(zone),
+  ]]], null, 'lead');
 }
 
 // Day: the device Day tab (timeline and day list), plan from the slot entities, history from get hist.
@@ -784,7 +786,7 @@ function settingsView(m, t) {
         ]),
       ]),
   };
-  return tabbed(m, 'settings', [['zones', t('zones'), m.zones.map(zone)], ['weather', t('wx'), [S.rain, S.wind, S.wx]], ['aux', t('aux_def'), [S.aux]],
+  return tabbed(m, 'settings', [['zones', t('zones'), m.zones.map(zone)], ['weather', t('wx'), [S.rain, S.wind, S.wx]], ['aux', t('aux_def'), [m.aux && S.aux]],
     ['system', t('s'), [S.sys, S.diag, S.buz]]]);
 }
 
@@ -1883,7 +1885,12 @@ const TABCSS = `
   .bar button[aria-selected=true]{background:var(--card-background-color,#fff);color:var(--primary-text-color);
     box-shadow:0 1px 3px rgba(0,0,0,.2)}
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,340px),1fr));gap:16px;align-items:start}
-  .sec{display:grid;grid-template-columns:1fr 1fr;gap:8px;min-width:0} .sec>*{grid-column:span 2;min-width:0} .sec>.t{grid-column:span 1}`;
+  .sec{display:grid;grid-template-columns:1fr 1fr;gap:8px;min-width:0} .sec>*{grid-column:span 2;min-width:0} .sec>.t{grid-column:span 1}
+  /* lead: first section alone in column 1, the others in row order on 3 columns; narrower: lead on top, 2 or 1 columns */
+  .grid.lead{grid-template-columns:minmax(0,1fr)} .wrap{container-type:inline-size}
+  @container (min-width:640px){.grid.lead{grid-template-columns:repeat(2,minmax(0,1fr))} .grid.lead>.sec:first-child{grid-column:1/-1}}
+  @container (min-width:1100px){.grid.lead{grid-template-columns:repeat(4,minmax(0,1fr))}
+    .grid.lead>.sec:first-child{grid-column:1;grid-row:1/span var(--rows,1)}}`;
 class IrryTabsCard extends HTMLElement {
   setConfig(c) { this._c = c || {}; this._el = {}; this._tab = null; this._r = 0; }
   getCardSize() { return 12; }
@@ -1908,7 +1915,8 @@ class IrryTabsCard extends HTMLElement {
     this._tab = t;
     try { localStorage.setItem(this.key(), String(tb[t] ? tb[t].id ?? t : t)); } catch (e) { /* private mode */ }
     r.innerHTML = `<style>${TABCSS}</style>${tb.length > 1 ? `<div class="bar" role="tablist">${tb.map((x, k) => `<button role="tab" data-i="${k}"
-      aria-selected="${k === t}">${esc(x.name)}</button>`).join('')}</div>` : ''}<div class="grid"></div>`;
+      aria-selected="${k === t}">${esc(x.name)}</button>`).join('')}</div>` : ''}<div class="wrap"><div class="grid${
+      this._c.layout === 'lead' ? ' lead' : ''}" style="--rows:${Math.max(1, Math.ceil(((tb[t] ? tb[t].sections.length : 1) - 1) / 3))}"></div></div>`;
     r.querySelectorAll('.bar button').forEach((b) => { b.onclick = () => { if (+b.dataset.i !== this._tab) this.show(+b.dataset.i); }; });
     if (!tb[t]) return;
     const run = ++this._r;

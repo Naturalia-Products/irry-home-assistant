@@ -216,6 +216,26 @@ function refs(o, out = []) {
   ok(lib.fmtState('dur', { state: '5530', attributes: {} }, c) === `1 ${t('h')} 32 ${t('min')}`, `uptime ${lib.fmtState('dur', { state: '5530', attributes: {} }, c)}`);
   ok(JSON.stringify(await reg['ll-strategy-view-irry-settings'].generate({}, h8)).includes(t('x_find_led'))
     && JSON.stringify(await reg['ll-strategy-view-irry-settings'].generate({}, fakeHass())).includes(t('find_ok')), 'Find note ws / x8');
+  // R8 Mode: in Aux mode zone 7 is left out of every view, in Zone 7 mode the Aux items; ws and x8.
+  for (const x8 of [false, true]) {
+    const tag = x8 ? 'x8' : 'ws';
+    const ha = fakeHass({ x8, r8: 'Aux' }), hz = fakeHass({ x8, r8: 'Zone 7' });
+    const da = await reg['ll-strategy-dashboard-irry-the-seven'].generate({}, ha), dz = await reg['ll-strategy-dashboard-irry-the-seven'].generate({}, hz);
+    const views = async (hh) => { const o = []; for (const k of ['status', 'irrigation', 'day', 'weather', 'settings']) o.push(await reg[`ll-strategy-view-irry-${k}`].generate({}, hh)); return o; };
+    const ja = JSON.stringify([da, await views(ha)]), jz = JSON.stringify([dz, await views(hz)]);
+    ok(lib.irryModel(ha).zones.join() === '1,2,3,4,5,6' && lib.irryModel(ha).aux && !/zone_7_|"zone":7/.test(ja) && /_aux"|aux_mode/.test(ja), `${tag} Aux mode: no zone 7`);
+    ok(lib.irryModel(hz).zones.length === 7 && !lib.irryModel(hz).aux && /zone_7_/.test(jz) && !/_aux"|aux_mode|aux_label|aux_on_delay/.test(jz), `${tag} Zone 7 mode: no Aux`);
+    const sa = tabsOf(await reg['ll-strategy-view-irry-settings'].generate({}, ha)).map((x) => `${x.id}:${x.sections.length}`).join();
+    const sz = tabsOf(await reg['ll-strategy-view-irry-settings'].generate({}, hz)).map((x) => x.id).join();
+    ok(sa === `zones:6,weather:3,aux:1,system:${x8 ? 2 : 3}` && sz === 'zones,weather,system', `${tag} settings tabs ${sa} / ${sz}`);
+    ok(lib.ovlText(lib.irryModel(ha), t, 'it', '2 zones tue 2026-11-03 06:11-06:20 6,7').endsWith(lib.irryModel(ha).label(6)), `${tag} overlap text without zone 7`);
+  }
+  // Irrigation: one tabs card with the "lead" layout, Rapid first, then the zones in order.
+  {
+    const iv = await reg['ll-strategy-view-irry-irrigation'].generate({}, fakeHass()), ic = iv.sections[0].cards[0];
+    ok(iv.sections.length === 1 && ic.type === 'custom:irry-tabs-card' && ic.layout === 'lead' && ic.tabs.length === 1 && ic.tabs[0].sections.length === 8
+      && JSON.stringify(ic.tabs[0].sections[0]).includes('irry-rapid-card') && JSON.stringify(ic.tabs[0].sections[7]).includes('"zone":7'), 'irrigation: lead layout, Rapid then Z1..Z7');
+  }
   // No empty section or card in any view, on ws and x8.
   for (const hh of [fakeHass(), h8]) for (const k of ['status', 'irrigation', 'day', 'weather', 'settings']) {
     const vv = await reg[`ll-strategy-view-irry-${k}`].generate({}, hh);

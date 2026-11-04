@@ -1,7 +1,7 @@
 // Fake hass for the tests: one ws device (x8: no buzzer entities), 7 zones, entity names as the firmware publishes them.
 // getData[what] is the j of the "get" action; ws[] records the callWS messages.
 const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 'it', x8 = false } = {}) {
+function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 'it', x8 = false, r8 } = {}) {
   const names = {
     binary_sensor: ['Rain Skip Active', 'Rain Value Valid', 'Time Valid', 'Valve Power', 'Weather Battery', 'Weather Water Leak', 'Wi-Fi Fallback Active',
       'Wind Over Threshold'],
@@ -93,6 +93,7 @@ function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 
   set('Position Source', 'home_assistant');
   set('RTC', 'valid');
   set('Time Zone', 'Europe/Rome');
+  if (r8) set('R8 Mode', r8, { options: ['Aux', 'Zone 7'] });
   if (!x8) set('Alarm Sound', 'Quiet Hours', { options: ['Off', 'On', 'Quiet Hours'] });
   return {
     language: lang, locale: { language: lang }, config: { time_zone: 'Europe/Rome' },
