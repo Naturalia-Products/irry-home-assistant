@@ -85,7 +85,7 @@ function refs(o, out = []) {
   delete reg['windrose-card'];
   const sv = await reg['ll-strategy-view-irry-settings'].generate({}, fakeHass());
   const stb = tabsOf(sv);
-  ok(stb && stb.map((x) => `${x.name}:${x.sections.length}`).join() === 'Zone:7,Meteo:3,Aux:1,Sistema:2', `settings tabs ${stb && stb.map((x) => `${x.name}:${x.sections.length}`)}`);
+  ok(stb && stb.map((x) => `${x.name}:${x.sections.length}`).join() === 'Zone:7,Meteo:3,Aux:1,Sistema:3', `settings tabs ${stb && stb.map((x) => `${x.name}:${x.sections.length}`)}`);
   ok(JSON.stringify(stb[0].sections[0]).includes('"heading":"Zona 1 · Prato"') && JSON.stringify(stb[0].sections[1]).includes('"heading":"Zona 2"'), 'zone titles: index and name');
   // Weather view without the station: no weather tab.
   const nw = fakeHass();
@@ -125,7 +125,7 @@ function refs(o, out = []) {
   ok(refs(d8).every((e) => h8.states[e]), 'x8: every entity exists');
   ok(!/alarm_sound|quiet_from|silence_alarm/.test(j8) && /find_device/.test(j8), 'x8: no buzzer, Find Device kept');
   const s8 = tabsOf(await reg['ll-strategy-view-irry-settings'].generate({}, h8)).map((x) => x.sections.length).join();
-  ok(s8 === '7,3,1,1', `x8: settings without the alarm section ${s8}`);
+  ok(s8 === '7,3,1,2', `x8: settings without the alarm section ${s8}`);
   ok(lib.I18N.it.x_find_led === 'Il LED lampeggia per 10 s' && !/buzz|cical/i.test(lib.I18N.en.x_find_led + lib.I18N.it.x_find_led), 'x8: Find note without the buzzer');
   const jw = JSON.stringify(await reg['ll-strategy-dashboard-irry-the-seven'].generate({}, fakeHass()));
   ok(/alarm_sound/.test(jw) && /silence_alarm/.test(jw) && /quiet_to/.test(jw), 'ws: alarm entities');
@@ -201,7 +201,9 @@ function refs(o, out = []) {
     && g2[t('es_uv')] === '3', `eco extras ${JSON.stringify(g2)}`);
   // Status: firmware version row, uptime as a duration, value / threshold pairs; x8: Find note for the LED only.
   const js = JSON.stringify(await reg['ll-strategy-view-irry-status'].generate({}, fakeHass()));
-  ok(js.includes('"value":"2.5.0"') && js.includes('irry-events-card') && !js.includes('"logbook"'), 'status: version row, events card');
+  const jg = JSON.stringify(stb[3].sections[1]);
+  ok(!js.includes(`"heading":"${t('x_diag')}"`) && !js.includes('"value":"2.5.0"') && js.includes('irry-events-card') && !js.includes('"logbook"'), 'status: no diagnostics, events card');
+  ok(jg.includes(`"heading":"${t('x_diag')}"`) && jg.includes('"value":"2.5.0"') && jg.includes('uptime') && JSON.stringify(stb[3].sections[0]).includes('restart'), 'settings Sistema: diagnostics after Device');
   ok(lib.fmtState('dur', { state: '5530', attributes: {} }, c) === `1 ${t('h')} 32 ${t('min')}`, `uptime ${lib.fmtState('dur', { state: '5530', attributes: {} }, c)}`);
   ok(JSON.stringify(await reg['ll-strategy-view-irry-settings'].generate({}, h8)).includes(t('x_find_led'))
     && JSON.stringify(await reg['ll-strategy-view-irry-settings'].generate({}, fakeHass())).includes(t('find_ok')), 'Find note ws / x8');

@@ -12,7 +12,7 @@
 // Units: the device "Units" select (Auto = from the time zone), as in the device UI; HA sensor values
 // are converted from whatever unit HA shows them in. Graphs keep the HA unit.
 
-const IRRY_VERSION = '0.3.3';
+const IRRY_VERSION = '0.3.4';
 const I18N = /*I18N*/ {} /*END*/;
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -447,8 +447,6 @@ function tabbed(m, view, tabs) {
 function statusView(m, t) {
   const E = m.E, has = (k) => !!E(k);
   const auxName = m.st('aux_label');
-  // Installed firmware: HA ESPHome writes sw_version as "<project version> (ESPHome <version>)".
-  const ver = String(m.dev.sw_version || '').split(' ')[0];
   // Zones as rows: a tile would show the switch state (On / Off) where the valve is Open / Closed.
   const zt = rows(m, m.zones.flatMap((n) => [
     { k: `zone_${n}_manual`, name: m.label(n), fmt: 'open', edit: true },
@@ -508,27 +506,6 @@ function statusView(m, t) {
           { k: 'weather_data', name: t('x_wdata'), fmt: 'wdata' },
           { k: 'irrigation_factor', name: t('m_f') },
           { k: 'irrigation_et0_yesterday', name: t('m_et0y') },
-        ]),
-      ]),
-      section([
-        heading(t('x_diag'), 'mdi:information-outline'),
-        rows(m, [
-          { head: t('fw') },
-          ver && { name: t('fw_cur'), value: ver },
-          { k: 'firmware_update_status', name: t('fwn'), fmt: 'fw' },
-          { k: 'firmware_update_mode', name: t('x_fwm'), fmt: 'fwm' },
-          { k: 'firmware_source', name: t('x_fwsrc') },
-          { head: t('time') },
-          { k: 'time_source', name: t('x_tsrc'), fmt: 'tsrc' },
-          { k: 'time_valid', name: t('x_tvalid'), fmt: 'yes' },
-          { head: t('wifi') },
-          { k: 'wi_fi_network', name: t('wifi'), fmt: 'wifi' },
-          { k: 'wi_fi_signal', name: t('signal') },
-          { k: 'ip_address', name: t('ip') },
-          { k: 'uptime', name: t('uptime'), fmt: 'dur' },
-          { head: t('x_station') },
-          { k: 'weather_feed', name: t('x_station'), fmt: 'feed' },
-          { k: 'weather_last_update', name: t('m_eco_rx'), fmt: 'tsago' },
         ]),
       ]),
     ].filter(Boolean),
@@ -698,6 +675,8 @@ function settingsView(m, t) {
   // Weather source as the device: Ecowitt when the feed is paired or pairable; the HA fields stay editable otherwise
   // (HA has no source entity, so with no source they are the way to choose Home Assistant).
   const ECO = ['unpaired', 'stale', 'ok'], NOECO = ['none', ...BAD];
+  // Installed firmware: HA ESPHome writes sw_version as "<project version> (ESPHome <version>)".
+  const ver = String(m.dev.sw_version || '').split(' ')[0];
   const zone = (n) => section([
     heading(zoneHead(m, t, n), 'mdi:sprinkler-variant'),
     rows(m, [
@@ -781,8 +760,30 @@ function settingsView(m, t) {
           { k: 'restart', name: t('restart_b'), confirm: t('x_restart_q'), edit: true },
         ]),
       ]),
+    // Diagnostics (moved from Status): installed firmware, time, network, station.
+    diag: section([
+        heading(t('x_diag'), 'mdi:information-outline'),
+        rows(m, [
+          { head: t('fw') },
+          ver && { name: t('fw_cur'), value: ver },
+          { k: 'firmware_update_status', name: t('fwn'), fmt: 'fw' },
+          { k: 'firmware_update_mode', name: t('x_fwm'), fmt: 'fwm' },
+          { k: 'firmware_source', name: t('x_fwsrc') },
+          { head: t('time') },
+          { k: 'time_source', name: t('x_tsrc'), fmt: 'tsrc' },
+          { k: 'time_valid', name: t('x_tvalid'), fmt: 'yes' },
+          { head: t('wifi') },
+          { k: 'wi_fi_network', name: t('wifi'), fmt: 'wifi' },
+          { k: 'wi_fi_signal', name: t('signal') },
+          { k: 'ip_address', name: t('ip') },
+          { k: 'uptime', name: t('uptime'), fmt: 'dur' },
+          { head: t('x_station') },
+          { k: 'weather_feed', name: t('x_station'), fmt: 'feed' },
+          { k: 'weather_last_update', name: t('m_eco_rx'), fmt: 'tsago' },
+        ]),
+      ]),
   };
-  return tabbed(m, 'settings', [[t('zones'), m.zones.map(zone)], [t('wx'), [S.rain, S.wind, S.wx]], [t('aux_def'), [S.aux]], [t('s'), [S.sys, S.buz]]]);
+  return tabbed(m, 'settings', [[t('zones'), m.zones.map(zone)], [t('wx'), [S.rain, S.wind, S.wx]], [t('aux_def'), [S.aux]], [t('s'), [S.sys, S.diag, S.buz]]]);
 }
 
 // HACS cards load in parallel with this file: wait (max 5 s) for the ones listed as dashboard resources, so the
