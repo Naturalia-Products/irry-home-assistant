@@ -12,7 +12,7 @@
 // Units: the device "Units" select (Auto = from the time zone), as in the device UI; HA sensor values
 // are converted from whatever unit HA shows them in. Graphs keep the HA unit.
 
-const IRRY_VERSION = '0.3.7';
+const IRRY_VERSION = '0.3.8';
 const I18N = /*I18N*/ {} /*END*/;
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -836,6 +836,26 @@ class IrryDashboardStrategy extends HTMLElement {
   }
 }
 
+// HA regenerates a strategy only on registry changes. What generate() reads from states (zone names, R8 Mode,
+// Aux name, units) and the Irry actions change without one, so they are compared here as well.
+const REGEN = new WeakMap();
+function regenKey(hass, config) {
+  if (!hass) return '';
+  let c = REGEN.get(hass);
+  if (!c) REGEN.set(hass, (c = new Map()));
+  const want = (config && config.device) || '';
+  if (!c.has(want)) {
+    const m = irryModel(hass, want || undefined, 'en');
+    c.set(want, JSON.stringify(m ? [[1, 2, 3, 4, 5, 6, 7, 8].map((n) => m.st(`zone_${n}_label`) ?? null),
+      m.st('r8_mode') ?? null, m.st('aux_label') ?? null, m.st('units') ?? null,
+      Object.keys((hass.services && hass.services.esphome) || {}).sort()] : null));
+  }
+  return c.get(want);
+}
+function shouldRegenerate(config, oldHass, newHass) { return !!oldHass && regenKey(oldHass, config) !== regenKey(newHass, config); }
+[IrryDashboardStrategy, IrryStatusStrategy, IrryIrrigationStrategy, IrryDayStrategy, IrryWeatherStrategy, IrrySettingsStrategy]
+  .forEach((C) => { C.shouldRegenerate = shouldRegenerate; });
+
 // ---------------------------------------------------------------- cards
 const CSS = `
   .wrap{padding:0 16px 16px} .row{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;margin:8px 0}
@@ -1276,7 +1296,7 @@ class IrryRapidCard extends IrryEditCard {
       + ` title="${esc(t(k))}" aria-label="${esc(t(k))}"><svg viewBox="0 0 24 24" width="20" height="20"><path d="${path}" fill="currentColor"/></svg></button>`;
     const zl = this._order.map((n, i) => `<div class="z">
       <label><input type="checkbox" data-zone="${n}"${this._inc.has(n) ? ' checked' : ''}> ${esc(m.label(n))}</label>
-      ${mv(i, -1, 'up', 'M7 14l5-5 5 5z')}${mv(i, 1, 'x_down', 'M7 10l5 5 5-5z')}</div>`).join('');
+      ${mv(i, -1, K('up'), 'M7 14l5-5 5 5z')}${mv(i, 1, K('x_down'), 'M7 10l5 5 5-5z')}</div>`).join('');
     const off = [1, 2, 3].filter((s) => s !== this._slot).map((s) =>
       `<label><input type="checkbox" data-off="${s}"${this._off.has(s) ? ' checked' : ''}> ${esc(t('turn_off_slot', { slot: s }))}</label>`).join('');
     r.innerHTML = `<style>${CSS}</style><ha-card><div class="wrap" style="padding-top:16px">
@@ -1483,13 +1503,13 @@ class IrryDayCard extends IrryGetCard {
     const zt = all.length && (zoomed || this._full) ? `<div class="zt"><button data-zoom>${esc(this._full ? t('x_zoom') : t('x_full_day'))}</button></div>` : '';
     const notes = `${!svc ? `<div class="note">${esc(t('x_no_svc'))}</div>` : ''}${D.real && jr.x ? `<div class="note">${esc(t('h_part'))}</div>` : ''}`;
     r.innerHTML = `<style>${CSS}${DAYCSS}</style><ha-card><div class="wrap${this.dark() ? ' dark' : ''}" style="padding-top:16px">
-      <div class="gnav">${nb(-7, '«', 'prev_week')}${nb(-1, '‹', 'prev_day')}
+      <div class="gnav">${nb(-7, '«', K('prev_week'))}${nb(-1, '‹', K('prev_day'))}
         <label class="fl gdp"><span>${esc(date)}</span><input type="date" data-date value="${isoOf(dn)}"${HO >= 0 && HO != null ? ` min="${isoOf(Math.min(HO, td.dn))}"` : ''} aria-label="${esc(t('pick_date'))}"></label>
-        ${g ? `<button data-gw="${-g}">${esc(t('today').replace(/^./, (x) => x.toUpperCase()))}</button>` : ''}${nb(1, '›', 'next_day')}${nb(7, '»', 'next_week')}</div>
+        ${g ? `<button data-gw="${-g}">${esc(t('today').replace(/^./, (x) => x.toUpperCase()))}</button>` : ''}${nb(1, '›', K('next_day'))}${nb(7, '»', K('next_week'))}</div>
       <div class="wk">${wk}</div>${ov}
       <div class="tlax">${ax}</div>${tl}${zt}<div class="lg">${lg}</div>
       <div class="ct">${esc(t('day_list'))}</div>${notes}
-      ${grp.length ? grp.map(li).join('') : `<div class="note">${esc(t(D.none ? 'h_none' : 'no_irr'))}</div>`}</div></ha-card>`;
+      ${grp.length ? grp.map(li).join('') : `<div class="note">${esc(t(D.none ? K('h_none') : K('no_irr')))}</div>`}</div></ha-card>`;
     const go = (v) => { this._g = v; this._sig = ''; this.hass = this._h; };
     r.querySelectorAll('[data-gw]').forEach((el) => el.addEventListener('click', () => go(g + +el.dataset.gw)));
     r.querySelectorAll('[data-g]').forEach((el) => el.addEventListener('click', () => go(+el.dataset.g)));
@@ -1866,7 +1886,7 @@ class IrryCalCard extends IrryCard {
     await new Promise((res) => setTimeout(res, 3000));
     const m2 = irryModel(this._h, this._c.device, this._l), e0 = m2.st('irrigation_et0_yesterday');
     const ok = m2.st('irrigation_reference_et0') !== before || !(e0 == null || BAD.includes(e0));
-    this.say(t(ok ? 'saved' : 'e_nodata'), ok ? 'ok' : 'err');
+    this.say(t(ok ? 'saved' : K('e_nodata')), ok ? 'ok' : 'err');
   }
 }
 
@@ -1997,5 +2017,5 @@ if (typeof module !== 'undefined') {
   module.exports = { irryModel, statusView, irrigationView, weatherView, settingsView, alerts, tr, slug, errText, ovlText,
     eventText, fwText, fmtState, devValue, toUnit, I18N, dayView, dayModel, devSlots, devToday, evModel, zoneHead, runs, ovDay, getCall, irryGet, hm, dnOf,
     ecoGroups, IrryDayCard, IrryEcoCard, IrryCoefCard, IrryCalCard, IrryNotesCard, IrryEventsCard, IrryTabsCard,
-    hacsReady, hour24, unitDec, fmtTime, dayRange, rowShown, coefLines, zoneFactor, IrryRowsCard, IrrySlotCard, IrryRapidCard };
+    hacsReady, shouldRegenerate, IrryDashboardStrategy, IrryStatusStrategy, IrryIrrigationStrategy, IrryDayStrategy, IrryWeatherStrategy, IrrySettingsStrategy, hour24, unitDec, fmtTime, dayRange, rowShown, coefLines, zoneFactor, IrryRowsCard, IrrySlotCard, IrryRapidCard };
 }

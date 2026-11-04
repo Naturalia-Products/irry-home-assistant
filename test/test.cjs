@@ -464,6 +464,34 @@ function refs(o, out = []) {
     ok(c1 && c1.service === 'set_value' && c1.data.value === 5.6 && c1.target.entity_id === mc.E('irrigation_reference_et0')
       && c2 && c2.domain === 'button' && c2.target.entity_id === mc.E('irrigation_calibrate') && cc.card._msg.text === t('saved'), `cal card writes ${JSON.stringify(hc2.calls)}`);
   }
+  {
+    // Every text key the source names, also through helpers and ternaries, is in the built I18N: a string literal that is
+    // a key of the text sources must be inlined. The literals below are state, attribute or unit values, not texts.
+    const fs = require('fs'), rd = (f) => (fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : {});
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'irry-the-seven.js'), 'utf8');
+    const dict = { ...rd(path.join(__dirname, '..', '..', 'src', 'ui', 'i18n', 'en.json')), ...(rd(path.join(__dirname, '..', 'i18n.json')).en || {}) };
+    const NOT_TEXT = ['n', 'mac', 'in', 'on', 'off', 'restart'];
+    const lits = new Set([...src.matchAll(/'([a-z][a-z0-9_]*)'/g)].map((x) => x[1]));
+    const miss = [...lits].filter((k) => k in dict && !NOT_TEXT.includes(k) && !(k in lib.I18N.en));
+    ok(!miss.length, `keys used in the source but missing from dist I18N: ${miss.join(' ')}`);
+    ok(['up', 'x_down', 'prev_week', 'prev_day', 'next_day', 'next_week', 'h_none', 'no_irr', 'e_nodata'].every((k) => lib.I18N.en[k] && lib.I18N.it[k]),
+      'indirect keys inlined (en, it)');
+    // shouldRegenerate: state changes that generate() reads, and the Irry actions.
+    const SR = lib.shouldRegenerate, h0 = fakeHass(), cfg = {};
+    const cp = (h) => ({ ...h, states: { ...h.states }, services: { esphome: { ...h.services.esphome } } });
+    const h1 = cp(h0); h1.states[Object.keys(h1.states).find((i) => i.endsWith('_weather_temperature'))] = { state: '19.0', attributes: {} };
+    ok(SR(cfg, h0, h1) === false, 'shouldRegenerate: an unrelated state change does not regenerate');
+    ok(SR(cfg, undefined, h0) === false, 'shouldRegenerate: no previous hass');
+    const z = (h, name, v) => { const id = Object.keys(h.entities).find((i) => h.entities[i].name === name); h.states[id] = { ...h.states[id], state: v }; return h; };
+    ok(SR(cfg, h0, z(cp(h0), 'Zone 2 Label', 'Orto')) === true, 'shouldRegenerate: zone renamed');
+    ok(SR(cfg, h0, z(cp(h0), 'R8 Mode', 'Aux')) === true, 'shouldRegenerate: R8 Mode');
+    ok(SR(cfg, h0, z(cp(h0), 'Aux Label', 'Pompa')) === true, 'shouldRegenerate: Aux name');
+    const h2 = cp(h0); delete h2.services.esphome.it7ws_8dee48_get;
+    ok(SR(cfg, h0, h2) === true, 'shouldRegenerate: Irry actions changed');
+    ok(SR({ device: 'nope' }, h0, z(cp(h0), 'Zone 2 Label', 'Orto')) === false, 'shouldRegenerate: other device');
+    ok(['IrryDashboardStrategy', 'IrryStatusStrategy', 'IrryIrrigationStrategy', 'IrryDayStrategy', 'IrryWeatherStrategy', 'IrrySettingsStrategy'].every((c) => lib[c] && lib[c].shouldRegenerate === SR),
+      'shouldRegenerate on the strategies');
+  }
   console.log(`test.cjs: ${n} checks, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();
