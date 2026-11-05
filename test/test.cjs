@@ -595,6 +595,63 @@ function refs(o, out = []) {
     };
     ok(ov('Zone 7') === true && ov('Aux') === false, 'M-F3: zone 7 in Aux mode not in overlaps');
   }
+  // ---- 0.4.0: firmware 2.6.0 (Zone N Next Start, Problems, get prog rk)
+  {
+    const nm = (hh, name) => Object.keys(hh.entities).find((i) => hh.entities[i].name === name);
+    const put = (hh, name, v) => { const id = nm(hh, name); hh.states = { ...hh.states, [id]: { ...hh.states[id], state: v } }; return hh; };
+    const cx = (hh) => { const m = lib.irryModel(hh); return { h: hh, m, t, l: 'it' }; };
+    const S2 = (hh, name) => hh.states[nm(hh, name)];
+    // Next start per zone: a row in the status zones and in each zone section, hidden while empty.
+    const hn = put(fakeHass(), 'Zone 1 Next Start', '2026-11-06T05:00:00+00:00'), dn = await reg['ll-strategy-dashboard-irry-the-seven'].generate({}, hn);
+    const js = JSON.stringify(dn), id1 = nm(hn, 'Zone 1 Next Start');
+    ok(js.split(id1).length - 1 === 2 && /"zone_7_next_start"|zone_7_next_start/.test(js), 'next start: status and zone rows, all zones');
+    ok(refs(dn).every((e) => hn.states[e]), 'next start: every entity exists');
+    ok(lib.fmtState('ts', S2(hn, 'Zone 1 Next Start'), cx(hn)).includes('06:00'), 'next start in the device zone');
+    const rn = mk(lib.IrryRowsCard, { device: 'dev1', rows: [{ entity: nm(hn, 'Zone 2 Next Start'), name: 'x', fmt: 'ts', hide_empty: true }] }, hn);
+    ok(!rn.html().includes('>x<'), 'next start: empty row hidden');
+    // Problems: the device UI words; '' all OK; the overlap with its window.
+    const c0 = cx(fakeHass());
+    ok(lib.fmtState('prob', S2(c0.h, 'Problems'), c0) === t('allok'), 'problems empty: all good');
+    let hp = put(fakeHass(), 'Problems', 'net_lost,clock_bad,ha_lost,rain_old,rain_unit,wind_old,net_trial,rain_bad');
+    const cp = cx(hp), fp = lib.fmtState('prob', S2(hp, 'Problems'), cp);
+    const want = [t('ch_net_lost'), t('ch_time_bad'), t('ch_ha_lost'), t('ch_rain_bad', { why: t('rain_old') }), t('ch_rain_bad', { why: t('x_rain_unit') }),
+      t('ch_wind_old'), t('ch_trial'), t('ch_rain_bad', { why: t('rain_badv') })];
+    ok(fp === want.join(' · '), `problems worded: ${fp}`);
+    const ap = lib.alerts(cp.m, cp);
+    ok(want.every((w) => ap.some(([, x]) => x === w)) && ap.find(([, x]) => x === t('ch_time_bad'))[0] === 'error', 'banner: one line per problem, clock as error');
+    ok(!lib.alerts(c0.m, c0).some(([ty]) => ty === 'warning' || ty === 'error'), 'banner: no warning with Problems empty');
+    // Time Valid off is not a second clock line when Problems exists (the firmware decides).
+    const hv = put(put(fakeHass(), 'Time Valid', 'off'), 'Problems', '');
+    ok(!lib.alerts(lib.irryModel(hv), cx(hv)).some(([, x]) => x === t('ch_time_bad')), 'banner: Time Valid not re-judged');
+    hp = put(put(fakeHass(), 'Problems', 'ovl'), 'Irrigation Overlap Warning', '2 zones tue 2026-11-03 06:11-06:20 1,2');
+    const ao = lib.alerts(lib.irryModel(hp), cx(hp)).filter(([, x]) => x.startsWith(t('ovl')));
+    ok(ao.length === 1 && ao[0][0] === 'warning' && ao[0][1].startsWith(t('ovl') + ': ') && ao[0][1].includes('Prato'), `banner: overlap once, with its window ${JSON.stringify(ao)}`);
+    // Firmware before 2.6.0 (no Problems entity): the clock and overlap lines as before.
+    const ho = put(put(fakeHass(), 'Time Valid', 'off'), 'Irrigation Overlap Warning', '2 zones tue 2026-11-03 06:11-06:20 1,2');
+    delete ho.entities[nm(ho, 'Problems')];
+    const aold = lib.alerts(lib.irryModel(ho), cx(ho));
+    ok(aold.some(([ty, x]) => ty === 'error' && x === t('ch_time_bad')) && aold.some(([ty, x]) => ty === 'info' && x.startsWith(t('ovl'))), 'banner: older firmware');
+    ok(lib.fmtState('prob', { state: 'unknown', attributes: {} }, c0) === '-', 'problems unknown: no verdict');
+    const bp = mk(reg['irry-banner-card'], { device: 'dev1' }, fakeHass()), b0 = bp.html();
+    bp.card.hass = put(fakeHass(), 'Problems', 'wind_old');
+    ok(!b0.includes(t('ch_wind_old')) && bp.html().includes(t('ch_wind_old')), 'banner card follows Problems');
+    // Rapid: the slot flag from get prog rk, fetched again when a slot changes.
+    const hr = fakeHass(); hr.getData.prog = { rk: [1, 2, 0] };
+    const rp = mk(lib.IrryRapidCard, { device: 'dev1' }, hr);
+    await tick(); await tick();
+    const progs = () => hr.ws.filter((q) => (q.service_data || {}).what === 'prog').length;
+    ok(rp.html().includes(t('uni')) && progs() === 1, `rapid: slot 1 uniform from rk (${progs()} get)`);
+    rp.card.hass = { ...hr, states: { ...hr.states } }; await tick();
+    ok(progs() === 1, 'rapid: same program, no new get');
+    hr.getData.prog = { rk: [2, 2, 0] };
+    const h2 = put({ ...hr, states: { ...hr.states } }, 'Zone 1 S1 Duration', '12.0'); rp.card.hass = h2; await tick(); await tick();
+    ok(progs() === 2 && rp.html().includes(t('mixed')), 'rapid: slot change, rk fetched again');
+    rp.card._slot = 3; rp.card._sig = ''; rp.card.hass = { ...h2, states: { ...h2.states } };
+    ok(rp.html().includes(t('empty')), 'rapid: slot 3 empty');
+    const hx = fakeHass(); hx.getData.prog = null;
+    const rx = mk(lib.IrryRapidCard, { device: 'dev1' }, hx); await tick(); await tick();
+    ok(![t('uni'), t('mixed'), t('empty')].some((x) => rx.html().includes('>' + x + '<')), 'rapid: no rk, no flag');
+  }
   console.log(`test.cjs: ${n} checks, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

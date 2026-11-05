@@ -19,7 +19,7 @@ function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 
     text_sensor: ['Firmware Source', 'Firmware Update Status', 'IP Address', 'Irrigation Method', 'Irrigation Overlap Warning',
       'Last Event', 'Next Irrigation', 'Time Source', 'Weather Data', 'Weather Feed', 'Weather Last Update', 'Wi-Fi Network',
       'Wind Pause', 'Wind Resume', 'Zone Active', 'Wind Paused Zones', 'Wind Waiting Zones', 'Wind Skip At', 'Next Sheltered Start',
-      'Next Sheltered Zone', 'Position Source', 'Altitude Source', 'Time Zone', 'RTC', 'Firmware Last Check'],
+      'Next Sheltered Zone', 'Position Source', 'Altitude Source', 'Time Zone', 'RTC', 'Firmware Last Check', 'Problems'],
     time: [], date: [],
   };
   if (!x8) { names.select.push('Alarm Sound'); names.time.push('Quiet From', 'Quiet To'); names.button.push('Silence Alarm'); }
@@ -29,7 +29,7 @@ function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 
     names.switch.push(`${z} Manual`, `${z} Sheltered from Rain`, `${z} Sheltered from Wind`);
     names.sensor.push(`${z} Irrigation Factor`);
     names.select.push(`${z} Plant Type`);
-    names.text_sensor.push(`${z} End`);
+    names.text_sensor.push(`${z} End`, `${z} Next Start`);
     for (let s = 1; s <= 3; s++) {
       names.switch.push(`${z} S${s} Enable`, `${z} S${s} All Days`, ...['1-Mon', '2-Tue', '3-Wed', '4-Thu', '5-Fri', '6-Sat', '7-Sun'].map((d) => `${z} S${s} ${d}`));
       names.number.push(`${z} S${s} Duration`, `${z} S${s} Every N Days`);
@@ -93,6 +93,9 @@ function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 
   set('Position Source', 'home_assistant');
   set('RTC', 'valid');
   set('Time Zone', 'Europe/Rome');
+  // Firmware 2.6.0: Problems '' = all OK; Zone N Next Start (timestamp) unknown = no start.
+  set('Problems', '');
+  for (let n = 1; n <= zones; n++) set(`Zone ${n} Next Start`, 'unknown');
   if (r8) set('R8 Mode', r8, { options: ['Aux', 'Zone 7'] });
   if (!x8) set('Alarm Sound', 'Quiet Hours', { options: ['Off', 'On', 'Quiet Hours'] });
   return {

@@ -12,7 +12,7 @@
 // Units: the device "Units" select (Auto = from the time zone), as in the device UI; HA sensor values
 // are converted from whatever unit HA shows them in. Graphs keep the HA unit.
 
-const IRRY_VERSION = '0.3.9';
+const IRRY_VERSION = '0.4.0';
 const I18N = /*I18N*/ {} /*END*/;
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -418,6 +418,17 @@ function ovlText(m, t, l, s) {
   const when = g[3] ? dateText(l, g[3], g[4], g[5]) : dayNames(l)[DAYS.indexOf(g[2])];
   return `${when} · ${t('ovl_ban', { count: +g[1], from: g[6], to: g[7], zones: g[8].split(',').filter((z) => m.zones.includes(+z)).map((z) => m.label(+z)).join(', ') })}`;
 }
+// Problems (firmware 2.6.0, spec §8.3): the health codes that are not OK, comma-separated, '' = all OK. Worded with the
+// device UI texts of the Status health card; ovl with the Overlap Warning window.
+const PROB = { net_trial: K('ch_trial'), net_lost: K('ch_net_lost'), clock_bad: K('ch_time_bad'), ha_lost: K('ch_ha_lost'), wind_old: K('ch_wind_old') };
+const PROB_RAIN = { rain_old: K('rain_old'), rain_bad: K('rain_badv'), rain_unit: K('x_rain_unit') };
+const probCodes = (s) => String(s || '').split(',').map((x) => x.trim()).filter(Boolean);
+function probText(m, t, l, p) {
+  if (PROB[p]) return t(PROB[p]);
+  if (PROB_RAIN[p]) return t('ch_rain_bad', { why: t(PROB_RAIN[p]) });
+  if (p === 'ovl') { const ov = m.st('irrigation_overlap_warning'); return ov && !BAD.includes(ov) ? `${t('ovl')}: ${ovlText(m, t, l, ov)}` : t('ovl'); }
+  return p;
+}
 // Last Event: the firmware writes the zone events in the device language, the HA action results in English.
 function eventText(m, t, l, s) {
   let g = s.match(/^Rapid S(\d)(?:: (\d+) zones| refused: (.*))$/);
@@ -457,6 +468,7 @@ function fmtState(f, s, c, row = {}) {
     case 'batt': return t(v === 'on' ? K('m_batt_low') : K('m_batt_ok'));
     case 'zact': return BAD.includes(v) || v === '-' ? t('m_none') : v;
     case 'ts': return BAD.includes(v) ? '-' : fmtTime(v, c);
+    case 'prob': return v === '' ? t('allok') : BAD.includes(v) ? '-' : probCodes(v).map((p) => probText(m, t, c.l, p)).join(' · ');
     case 'tsago': return BAD.includes(v) ? '-' : tsAgo(v, c);
     case 'dur': { const x = parseFloat(v); return isNaN(x) ? '-' : fdur(t, x); }
     case 'num': { const x = parseFloat(v); return isNaN(x) ? '-' : nf(x, x % 1 ? 1 : 0, c.l); }  // a value with no unit (UV index)
@@ -545,6 +557,8 @@ function statusView(m, t) {
   const zt = rows(m, m.zones.flatMap((n) => [
     { k: `zone_${n}_manual`, name: m.label(n), fmt: 'open', edit: true },
     { k: `zone_${n}_end`, name: `${m.label(n)} · ${t('x_end')}`, hide_empty: true },
+    // Firmware 2.6.0: the zone's own next start (empty = none); a rain skip is said by the banner.
+    { k: `zone_${n}_next_start`, name: `${m.label(n)} · ${t('next')}`, fmt: 'ts', hide_empty: true },
   ]));
   return {
     type: 'sections', max_columns: 4,
@@ -554,6 +568,7 @@ function statusView(m, t) {
         heading(t('st'), 'mdi:sprinkler-variant'),
         rows(m, [
           { k: 'zone_active', name: t('now_run'), fmt: 'zact' },
+          { k: 'problems', name: t('x_problems'), fmt: 'prob', ref: E('irrigation_overlap_warning') || undefined },
           { k: 'next_irrigation', name: t('next'), fmt: 'next', ref: E('programs_paused') || undefined },
           { k: 'wind_resume', name: t('x_wind_res'), fmt: 'ts', hide_empty: true },
         ]),
@@ -612,6 +627,7 @@ function irrigationView(m, t) {
     heading(zoneHead(m, t, n), 'mdi:sprinkler-variant'),
     has(`zone_${n}_end`) && tile(E(`zone_${n}_end`), { name: t('x_end'), visibility: shown(E(`zone_${n}_end`)) }),
     rows(m, [
+      { k: `zone_${n}_next_start`, name: t('next'), fmt: 'ts', hide_empty: true },
       { k: `zone_${n}_manual`, name: t('x_man_open'), fmt: 'open', edit: true },
       { k: `zone_${n}_irrigation_factor`, name: t('x_zf') },
     ]),
@@ -1027,7 +1043,7 @@ class IrryCard extends HTMLElement {
 const BANNER_KEYS = ['zone_active', 'programs_paused', 'rain_skip_active', 'rain_last_24h', 'rain_skip_threshold', 'wind_pause',
   'wind_resume', 'wind_over_threshold', 'time_valid', 'weather_data', 'weather_feed', 'weather_battery',
   'irrigation_overlap_warning', 'firmware_update_status', 'wi_fi_network', 'wi_fi_fallback_active', 'units',
-  'wind_paused_zones', 'wind_waiting_zones', 'wind_skip_at', 'next_sheltered_start', 'next_sheltered_zone'];
+  'wind_paused_zones', 'wind_waiting_zones', 'wind_skip_at', 'next_sheltered_start', 'next_sheltered_zone', 'problems'];
 function alerts(m, c) {
   const t = c.t, st = m.st, A = [], add = (type, text) => A.push([type, text]);
   const f = (k) => { const s = m.so(k); return s ? fmtState('', s, c) : ''; };
@@ -1062,7 +1078,10 @@ function alerts(m, c) {
     add('warning', A.join(' · '));
   }
   if (st('wind_over_threshold') === 'on' && wp === 'off') add('info', t('wind_over_nx'));
-  if (st('time_valid') === 'off') add('error', t('ch_time_bad'));
+  // Health from the firmware (Problems); before 2.6.0 only the clock and the overlap entities.
+  const pr = m.so('problems');
+  if (pr && pr.state !== 'unknown') probCodes(pr.state).forEach((p) => add(p === 'clock_bad' ? 'error' : 'warning', probText(m, t, c.l, p)));
+  else if (st('time_valid') === 'off') add('error', t('ch_time_bad'));
   const wd = st('weather_data');
   if (wd === 'missing') add('warning', t('x_wd_missing'));
   if (wd === 'fallback') add('info', t('x_wd_fallback'));
@@ -1071,7 +1090,7 @@ function alerts(m, c) {
   if (fd === 'stale') add('warning', t('x_feed_stale'));
   if (st('weather_battery') === 'on') add('warning', `${t('m_batt')}: ${t('m_batt_low')}`);
   const ov = st('irrigation_overlap_warning');
-  if (ov && !BAD.includes(ov)) add('info', `${t('ovl')}: ${ovlText(m, t, c.l, ov)}`);
+  if (!pr && ov && !BAD.includes(ov)) add('info', `${t('ovl')}: ${ovlText(m, t, c.l, ov)}`);
   const fw = st('firmware_update_status') || '';
   if (/ available/.test(fw)) add('info', fwText(t, fw));
   if (st('wi_fi_fallback_active') === 'on' || st('wi_fi_network') === 'fallback') add('info', t('x_wifi_fb'));
@@ -1370,7 +1389,18 @@ class IrryRapidCard extends IrryEditCard {
   setConfig(c) { super.setConfig(c); this._slot = 1; this._edit = false; }
   signature() {
     const m = this._m;
-    return m ? JSON.stringify([this._l, this._slot, m.zones.map((n) => [m.label(n), slotFrom(m, n, this._slot)])]) : 'none';
+    return m ? JSON.stringify([this._l, this._slot, this._rk, m.zones.map((n) => [m.label(n), slotFrom(m, n, this._slot)])]) : 'none';
+  }
+  // Rapid flag per slot from the firmware (get prog rk, it7::rapid_kind: 0 empty, 1 uniform, 2 mixed), fetched again
+  // when a slot or the Sequence Order changes; an error leaves no flag until the next change.
+  prog() {
+    const m = this._m;
+    if (!m || !m.action('get')) return;
+    const key = JSON.stringify([m.zones.map((n) => [1, 2, 3].map((s) => slotFrom(m, n, s))), m.st('sequence_order')]);
+    if (key === this._pk) return;
+    this._pk = key;
+    irryGet(this._h, m, 'prog', 0).then((j) => { this._rk = j && Array.isArray(j.rk) ? j.rk : null; }, () => { this._rk = null; })
+      .finally(() => { this._sig = ''; if (this._h) this.hass = this._h; });
   }
   // From the slot as it is now: the enabled zones by start time, the first one's start / duration / days.
   // With a draft (_edit) only the zone list follows the device (a zone gone or added: R8 Mode); labels, the
@@ -1378,6 +1408,7 @@ class IrryRapidCard extends IrryEditCard {
   load() {
     const m = this._m;
     if (!m) return;
+    this.prog();
     if (this._edit && this._v) {
       this._order = [...this._order.filter((n) => m.zones.includes(n)), ...m.zones.filter((n) => !this._order.includes(n))];
       this._inc = new Set([...this._inc].filter((n) => m.zones.includes(n)));
@@ -1392,6 +1423,10 @@ class IrryRapidCard extends IrryEditCard {
     this._order = [...on.map((z) => z.n), ...zs.filter((z) => !on.includes(z)).map((z) => z.n)];
     this._inc = new Set(on.length ? on.map((z) => z.n) : m.zones);
     this._off = new Set();
+  }
+  kind() {
+    const k = this._rk ? this._rk[this._slot - 1] : null;
+    return k == null ? '' : `<span class="${k === 1 ? 'ok' : ''}">${esc(this._t([K('empty'), K('uni'), K('mixed')][k] || K('mixed')))}</span>`;
   }
   val() { return this._v; }
   changed(key, repaint) { this._edit = true; super.changed(key, repaint); }
@@ -1409,7 +1444,7 @@ class IrryRapidCard extends IrryEditCard {
     const off = [1, 2, 3].filter((s) => s !== this._slot).map((s) =>
       `<label><input type="checkbox" data-off="${s}"${this._off.has(s) ? ' checked' : ''}> ${esc(t('turn_off_slot', { slot: s }))}</label>`).join('');
     r.innerHTML = `<style>${CSS}</style><ha-card><div class="wrap" style="padding-top:16px">
-      <div class="row"><select data-slot>${so}</select></div>
+      <div class="row"><select data-slot>${so}</select>${this.kind()}</div>
       ${this.fields(this._v, 'r')}
       <div class="row"><span class="b">${esc(t('seq_hdr'))}</span></div>${zl}
       <div class="row">${off}</div>
