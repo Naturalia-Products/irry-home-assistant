@@ -12,7 +12,7 @@
 // Units: the device "Units" select (Auto = from the time zone), as in the device UI; HA sensor values
 // are converted from whatever unit HA shows them in. Graphs keep the HA unit.
 
-const IRRY_VERSION = '0.4.4';
+const IRRY_VERSION = '0.4.5';
 const I18N = /*I18N*/ {} /*END*/;
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -525,7 +525,6 @@ function fmtState(f, s, c, row = {}) {
 
 // ---------------------------------------------------------------- views
 const tile = (entity, x = {}) => ({ type: 'tile', entity, ...x });
-const toggle = { action: 'toggle' }, MORE = { action: 'more-info' };
 const shown = (entity) => [{ condition: 'state', entity, state_not: BAD }];
 const heading = (text, icon) => ({ type: 'heading', heading: text, ...(icon ? { icon } : {}) });
 const section = (cards, x = {}) => ({ type: 'grid', cards: cards.filter(Boolean), ...x });
@@ -533,16 +532,25 @@ const noDevice = (t) => ({
   type: 'sections', max_columns: 2,
   sections: [section([{ type: 'markdown', content: `<ha-alert alert-type="warning">${t('x_no_dev')}</ha-alert>` }])],
 });
-const press = (entity, x = {}) => ({ action: 'perform-action', perform_action: 'button.press', target: { entity_id: entity }, ...x });
 // Rows card: name in the device words, value translated and in the device units (edit: writable control).
 // Rows of entities the device does not have are dropped, and so is a heading with no row after it.
 // { note } is a text line, { name, value } a fixed value; only: { k, state } shows the row while that entity has that state
-// (a list: one of them; no state: while it exists).
+// (a list: one of them; no state: while it exists). off: the conditions (one or a list, see offHit) that make the
+// control inert, entities the device lacks dropped.
 function rows(m, list, x = {}) {
   const r = list.filter((e) => e && (!e.only || m.E(e.only.k)) && (e.head || e.note || e.value || m.E(e.k))).map((e) => {
     const o = e.head || e.note || e.value ? { ...e } : { ...e, entity: m.E(e.k) };
     if (o.only) o.only = o.only.state === undefined ? undefined : { entity: m.E(e.only.k), state: e.only.state };
-    if (o.off) o.off = m.E(e.off.k) ? { entity: m.E(e.off.k), state: e.off.state } : undefined;
+    if (o.off) {
+      o.off = [].concat(e.off).map((c) => {
+        const x = { ...c };
+        delete x.k; delete x.ks;
+        if (c.k) { x.entity = m.E(c.k); if (!x.entity) return null; }
+        if (c.ks) x.entities = c.ks.map(m.E).filter(Boolean);
+        return x;
+      }).filter(Boolean);
+      if (!o.off.length) o.off = undefined;
+    }
     delete o.k;
     for (const k of Object.keys(o)) if (o[k] === undefined) delete o[k];
     return o;
@@ -566,20 +574,29 @@ function tabbed(m, view, tabs, def, layout) {
   };
 }
 
+// Inert conditions from the firmware refusals, shared by the views.
+const FW_BUSY = '^(installing|verifying)$';  // Firmware Update Status during an install and the verify after it
+// Zone N Manual: an opening is refused during an install (ota_pv) and with MAXO zones open (open_limit); closing never.
+const zoneOff = (m) => ({ off: [{ k: 'firmware_update_status', re: FW_BUSY }, { ks: m.zones.map((n) => `zone_${n}_manual`), state: 'on', n: MAXO }], off_on: true });
+const FIND_MS = 10e3, LONG_MS = 500;  // LONG_MS: long press = history  // the firmware's Find Device time
+// Find Device: the answer stays for the command time, the button inert meanwhile.
+const findRow = (m, t, name) => ({ k: 'find_device', name, edit: true, wide: true, ok: t(m.E('alarm_sound') ? K('find_ok') : K('x_find_led')), hold: FIND_MS });
+// Silence Alarm: the alarm sounds only with the time not valid and the buzzer on (quiet hours are not known to HA).
+const silenceRow = (t, x = {}) => ({ k: 'silence_alarm', name: t('silence'), edit: true, ...x, off: [{ k: 'time_valid', state: 'on' }, { k: 'alarm_sound', state: 'Off' }] });
+
 function statusView(m, t) {
   const E = m.E, has = (k) => !!E(k);
   const auxName = m.st('aux_label');
   // Zones as rows: a tile would show the switch state (On / Off) where the valve is Open / Closed.
   const zt = rows(m, m.zones.flatMap((n) => [
-    { k: `zone_${n}_manual`, name: m.label(n), fmt: 'open', edit: true, zone: n },
+    { k: `zone_${n}_manual`, name: m.label(n), fmt: 'open', edit: true, zone: n, ...zoneOff(m) },
     // Always shown ("—" while empty): rows appearing on a command would resize the card.
     { k: `zone_${n}_end`, name: `${m.label(n)} · ${t('x_end')}`, dash: true },
     // Firmware 2.6.0: the zone's own next start (empty = none); a rain skip is said by the banner.
     { k: `zone_${n}_next_start`, name: `${m.label(n)} · ${t('next')}`, fmt: 'ts', dash: true },
   ]).concat([
-    // Inactive while they would do nothing: no zone open; no wind pause or wait (the firmware ignores the press then).
-    { k: 'close_all_zone_valves', name: t('close_all'), edit: true, confirm: t('x_close_q'), off: { k: 'zone_active', state: ['-', '', ...BAD] } },
-    has('wind_pause') && { k: 'ignore_wind', name: t('wind_ign'), edit: true, ok: t('wind_ignd'), off: { k: 'wind_pause', state: ['off', ...BAD] } },
+    // Inactive while it would do nothing: no zone open.
+    { k: 'close_all_zone_valves', name: t('close_all'), edit: true, wide: true, confirm: t('x_close_q'), off: { k: 'zone_active', state: ['-', '', ...BAD] } },
   ]), { irr: true, msg_top: true });
   return {
     type: 'sections', max_columns: 4,
@@ -597,14 +614,16 @@ function statusView(m, t) {
           { k: 'firmware_update_status', name: t('fw'), fmt: 'fwst' },
           has('wi_fi_network') ? { k: 'wi_fi_network', name: t('wifi'), fmt: 'wifi' } : { k: 'wi_fi_fallback_active', name: t('wfb_chip'), fmt: 'yes' },
         ]),
-        // Tiles with a state: tap = history (more-info) as every read-only row, icon = the action.
-        has('valve_power') && tile(E('valve_power'), { name: t('vp'), tap_action: MORE }),
-        has('programs_paused') && tile(E('programs_paused'), { name: t('pause'), tap_action: MORE, icon_tap_action: toggle }),
-        m.aux && has('aux') && tile(E('aux'), { name: auxName && !BAD.includes(auxName) ? auxName : t('aux_def'), tap_action: MORE, icon_tap_action: toggle }),
-        // Buttons: no state line (HA would show the last press, or "Unknown").
-        has('find_device') && tile(E('find_device'), { name: t('find'), icon: 'mdi:map-marker-radius-outline', hide_state: true, tap_action: press(E('find_device')) }),
-        // Waveshare only (x8 has no beeper); no entity tells whether an alarm sounds, so it is always shown.
-        has('silence_alarm') && tile(E('silence_alarm'), { name: t('silence'), icon: 'mdi:volume-off', hide_state: true, tap_action: press(E('silence_alarm')) }),
+        // Full-width buttons, one per line, the state on the button (st: on / off text) and long press = history; a
+        // tile cannot be inert. Valve Power is read-only (tap = history). Aux is refused in Sync mode and during an
+        // install; Silence Alarm (Waveshare only) does nothing without an alarm.
+        rows(m, [
+          { k: 'valve_power', name: t('vp'), wide: true, st: [t('vp_on'), t('vp_off')] },
+          m.aux && { k: 'aux', name: auxName && !BAD.includes(auxName) ? auxName : t('aux_def'), edit: true, wide: true, st: [t('vp_on'), t('vp_off')],
+            off: [{ k: 'aux_mode', state: 'Sync' }, { k: 'firmware_update_status', state: 'installing' }] },
+          { k: 'programs_paused', name: t('pause'), edit: true, wide: true, st: [t('x_yes'), t('x_no')] },
+          silenceRow(t, { wide: true }),
+        ]),
         // Duration adaptation in the same section: below Stato in every layout (a section of its own flows beside it).
         heading(t('m_meth'), 'mdi:sprout'),
         rows(m, [
@@ -633,6 +652,8 @@ function statusView(m, t) {
           { k: 'weather_wind_gust', name: `${t('w_gust')} / ${t('rain_thr')}`, fmt: 'pair', int: true, ref: E('wind_gust_threshold') || undefined },
           { k: 'wind_over_threshold', name: t('x_wind_over'), fmt: 'yes' },
           { k: 'wind_pause', name: t('wp'), fmt: 'wpause' },
+          // Ignored by the firmware without a wind pause or wait; its answer in the card's message line.
+          { k: 'ignore_wind', name: t('wind_ign'), edit: true, wide: true, ok: t('wind_ignd'), off: { k: 'wind_pause', state: ['off', ...BAD] } },
         ]),
       ]),
     ].filter(Boolean),
@@ -646,7 +667,7 @@ function irrigationView(m, t) {
     has(`zone_${n}_end`) && tile(E(`zone_${n}_end`), { name: t('x_end'), visibility: shown(E(`zone_${n}_end`)) }),
     rows(m, [
       { k: `zone_${n}_next_start`, name: t('next'), fmt: 'ts', hide_empty: true },
-      { k: `zone_${n}_manual`, name: t('x_man_open'), fmt: 'open', edit: true, zone: n },
+      { k: `zone_${n}_manual`, name: t('x_man_open'), fmt: 'open', edit: true, zone: n, ...zoneOff(m) },
       { k: `zone_${n}_irrigation_factor`, name: t('x_zf') },
     ]),
     { type: 'custom:irry-slot-card', device: dev, zone: n, grid_options: { columns: 'full' } },
@@ -852,7 +873,7 @@ function settingsView(m, t) {
           { k: 'quiet_from', name: t('buz_from'), edit: true, only: { k: 'alarm_sound', state: 'Quiet Hours' } },
           { k: 'quiet_to', name: t('buz_to'), edit: true, only: { k: 'alarm_sound', state: 'Quiet Hours' } },
           { note: t('buz_h') },
-          { k: 'silence_alarm', name: t('silence'), edit: true },
+          silenceRow(t),
         ]),
       ]),
     aux: section([
@@ -872,8 +893,14 @@ function settingsView(m, t) {
           { head: t('fw') },
           { k: 'firmware_update_status', name: t('fwn'), fmt: 'fw' },
           { k: 'firmware_update_mode', name: t('x_fwm'), fmt: 'fwm', edit: true },
-          { k: 'firmware_check', name: t('fwn_check'), edit: true },
-          { k: 'firmware_install', name: t('fwn_go'), fmt: 'fwgo', ref: E('firmware_update_status') || undefined, edit: true },
+          // Check: refused with updates Off and while a check or an install runs.
+          { k: 'firmware_check', name: t('fwn_check'), edit: true,
+            off: [{ k: 'firmware_update_mode', state: 'Off' }, { k: 'firmware_update_status', re: '^(checking|installing|verifying)$' }] },
+          // Install (HA button, no force): refused for a manual-only version, with a zone open, during a wind pause or
+          // wait, and with the next start less than 10 min away (firmware FW_LEAD_S).
+          { k: 'firmware_install', name: t('fwn_go'), fmt: 'fwgo', ref: E('firmware_update_status') || undefined, edit: true,
+            off: [{ k: 'firmware_update_status', re: 'available \\(manual\\)' }, { k: 'zone_active', not: ['-', ''] },
+              { k: 'wind_pause', state: ['waiting', 'paused'] }, { k: 'next_irrigation', soon: 600 }] },
           { k: 'firmware_last_check', name: t('fwn_last'), fmt: 'tsago' },
         ]),
         m.action('get') && { type: 'custom:irry-notes-card', device: m.dev.id, grid_options: { columns: 'full' } },
@@ -882,8 +909,6 @@ function settingsView(m, t) {
           { k: 'time_zone', name: t('tz') },
           { k: 'rtc', name: t('rtc'), fmt: 'rtc' },
           { head: t('x_device') },
-          { k: 'find_device', name: t('find_b'), edit: true },
-          { note: t(E('alarm_sound') ? K('find_ok') : K('x_find_led')), only: { k: 'find_device' } },  // x8: LED only
           { k: 'restart', name: t('restart_b'), confirm: t('x_restart_q'), edit: true },
         ]),
       ]),
@@ -907,6 +932,8 @@ function settingsView(m, t) {
           { head: t('x_station') },
           { k: 'weather_feed', name: t('x_station'), fmt: 'feed' },
           { k: 'weather_last_update', name: t('m_eco_rx'), fmt: 'tsago' },
+          // Find Device at the end of Diagnostics, full width (x8: LED only).
+          findRow(m, t, t('find')),
         ]),
       ]),
   };
@@ -1002,6 +1029,11 @@ const CSS = `
   button.day.all.on{border-style:solid;border-color:var(--primary-color)}
   button{font:inherit;border:0;border-radius:6px;padding:6px 14px;cursor:pointer;background:var(--primary-color);color:var(--text-primary-color,#fff)}
   button.s{background:none;color:var(--primary-color);padding:2px 6px} button:disabled{opacity:.5;cursor:default}
+  .r.wide{display:block;padding:6px 0} .r.wide + .r.wide{border-top:0;padding-top:0}
+  button.w{display:flex;width:100%;min-height:40px;align-items:center;justify-content:center;gap:6px;background:rgba(127,127,127,.15);
+    color:var(--primary-text-color);user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;touch-action:manipulation}
+  button.w.on{background:var(--primary-color);color:var(--text-primary-color,#fff)} button.w .ws{font-weight:500} button.w .ws::before{content:'· '}
+  button.w.ro{cursor:pointer} button.w[aria-disabled=true]{opacity:.5;cursor:default}
   button.mv{width:32px;height:32px;padding:0;border-radius:50%;background:none;color:var(--secondary-text-color);display:inline-flex;
     align-items:center;justify-content:center} button.mv:hover{background:rgba(127,127,127,.15);color:var(--primary-text-color)}
   button.mv:disabled{visibility:hidden} .z label{flex:1;color:var(--primary-text-color)}
@@ -1152,6 +1184,22 @@ function rowShown(h, row) { return !row.only || [].concat(row.only.state).includ
 // A toggle keeps the requested state until the entity reports it, at most PEND_MS (as PEND in the device UI).
 const PEND_MS = 10e3, ERR_MS = 3e3;
 const EMPTY = (v) => !v || v === '-' || BAD.includes(v);
+// A control is inert (disabled, no action) while one of its off conditions holds: the firmware would refuse or ignore
+// the command then. { entity, state } one of those states; { entity, not } none of them; { entity, re } the state
+// matches; { entity, soon: s } a timestamp less than s seconds away; { entities, state, n } n or more in that state.
+function offHit(h, row) {
+  const st = (e) => (h.states[e] || {}).state;
+  return (row.off || []).some((c) => {
+    if (c.entities) return c.entities.filter((e) => [].concat(c.state).includes(st(e))).length >= c.n;
+    const v = st(c.entity);
+    if (v === undefined) return false;
+    if (c.re) return new RegExp(c.re).test(v);
+    if (c.soon) { const ms = Date.parse(v) - Date.now(); return !isNaN(ms) && ms < c.soon * 1e3; }
+    if (c.not) return !BAD.includes(v) && ![].concat(c.not).includes(v);
+    return [].concat(c.state).includes(v);
+  });
+}
+
 class IrryRowsCard extends IrryCard {
   getCardSize() { return 1 + ((this._c && this._c.rows) || []).length; }
   // Pending toggles: dropped once the entity has the requested state, or after PEND_MS.
@@ -1163,10 +1211,12 @@ class IrryRowsCard extends IrryCard {
   signature() {
     if (!this._m) return 'none';
     const h = this._h, ids = [], pd = this.settle();
-    for (const r of this._c.rows || []) ids.push(r.entity, r.ref, r.only && r.only.entity, r.off && r.off.entity, ...(r.refs || []));
+    for (const r of this._c.rows || []) ids.push(r.entity, r.ref, r.only && r.only.entity, ...(r.refs || []), ...(r.off || []).flatMap((x) => x.entities || [x.entity]));
+    // soon: the time decides too (every 30 s); hold: a pressed button stays inert for a while.
+    const tm = (this._c.rows || []).some((r) => (r.off || []).some((x) => x.soon)) ? Math.floor(Date.now() / 30e3) : 0;
     // irr: the irrigation lines of the banner (minute: the wind resume countdown).
     if (this._c.irr) ids.push(...BANNER_KEYS.map(this._m.E), ...this._m.zones.map((n) => this._m.E(`zone_${n}_sheltered_from_rain`)));
-    return JSON.stringify([this._l, this._m.imp, this._m.zones.map(this._m.label), this._err || '', this._ok || '', pd,
+    return JSON.stringify([this._l, this._m.imp, this._m.zones.map(this._m.label), this._err || '', this._ok || '', pd, tm, this.held(),
       this._c.irr && this._m.st('wind_pause') === 'paused' ? Math.floor(Date.now() / 60000) : 0,
       ids.map((i) => { const s = i && h.states[i]; return s && [s.state, s.attributes.unit_of_measurement]; })]);
   }
@@ -1188,6 +1238,7 @@ class IrryRowsCard extends IrryCard {
       if (row.value) { html.push(`<div class="r"><span class="n">${esc(row.name)}</span><span class="v">${esc(row.value)}</span></div>`); return; }
       const dom = row.entity.split('.')[0];
       const name = row.fmt === 'fwgo' ? t('fwn_go', { ver: avail(row)[1] }) : row.name;
+      if (row.wide) { html.push(`<div class="r wide">${this.wide(dom, row, s, i, name)}</div>`); return; }
       const ctl = row.edit ? this.control(dom, row, s, i, name) : null;
       html.push(ctl
         ? `<div class="r"><span class="n">${dom === 'button' ? '' : esc(name)}</span>${ctl}</div>`
@@ -1204,9 +1255,19 @@ class IrryRowsCard extends IrryCard {
     const top = this._c.msg_top ? msg : '', bot = this._c.msg_top ? '' : msg;
     r.innerHTML = `<style>${CSS}</style><ha-card>${this._c.title ? `<h1 class="card-header">${esc(this._c.title)}</h1>` : ''}<div class="rows">${top}${html.join('')}${bot}</div></ha-card>`;
     r.querySelectorAll('[data-more]').forEach((el) => el.addEventListener('click', () => this.more(el.dataset.more)));
+    // Long press (or right click) on a full-width switch: its history; the click that follows is not a command.
+    r.querySelectorAll('[data-lp]').forEach((el) => {
+      let tm = 0;
+      const stop = () => clearTimeout(tm);
+      el.addEventListener('pointerdown', () => { stop(); this._lp = false; tm = setTimeout(() => { this._lp = true; this.more(el.dataset.lp); }, LONG_MS); });
+      ['pointerup', 'pointerleave', 'pointercancel'].forEach((x) => el.addEventListener(x, stop));
+      el.addEventListener('contextmenu', (e) => { e.preventDefault(); stop(); this.more(el.dataset.lp); });
+    });
     r.querySelectorAll('[data-i]').forEach((el) => {
       const row = this._c.rows[+el.dataset.i];
-      el.addEventListener(el.tagName === 'BUTTON' ? 'click' : 'change', () => this.write(row, el));
+      // Full-width switch: a button whose press asks the other state (aria-pressed = the state shown).
+      if (el.dataset.w) el.addEventListener('click', () => { if (this._lp) { this._lp = false; return; } this.write(row, { checked: el.getAttribute('aria-pressed') !== 'true', blur: () => el.blur() }); });
+      else el.addEventListener(el.tagName === 'BUTTON' ? 'click' : 'change', () => this.write(row, el));
     });
     // Entity picker of HA (ha-selector, loaded by the HA frontend) in place of a text field.
     r.querySelectorAll('[data-pk]').forEach((el) => {
@@ -1218,13 +1279,36 @@ class IrryRowsCard extends IrryCard {
       el.replaceWith(p);
     });
   }
+  // Buttons pressed with row.hold, inert until the end of the command (Find Device: FIND_MS of the firmware).
+  held() {
+    const hd = this._hd || {}, now = Date.now();
+    for (const [e, x] of Object.entries(hd)) if (now >= x) delete hd[e];
+    return Object.keys(hd);
+  }
+  // Inert: an off condition holds (off_on: only while the switch is off, the closing is always allowed), or held.
+  inert(row, v) {
+    if (row.hold && this.held().includes(row.entity)) return true;
+    return offHit(this._h, row) && !(row.off_on && v && v.state === 'on');
+  }
+  // Full-width button: a press (button), a switch with its state on the button (filled while on), or a read-only
+  // state (tap = history). Inert: aria-disabled, so the long press for the history still works; write() does nothing.
+  wide(dom, row, s, i, name) {
+    const t = this._t, una = s.state === 'unavailable';
+    if (dom === 'button') return `<button class="w" data-i="${i}"${una || this.inert(row, s) ? ' disabled' : ''}>${esc(name)}</button>`;
+    const p = this._pd && this._pd[row.entity], v = p ? { ...s, state: p.v } : s, on = v.state === 'on', st = row.st || [t('vp_on'), t('vp_off')];
+    const txt = BAD.includes(v.state) ? t('x_unav') : on ? st[0] : st[1];
+    const sw = row.edit && (dom === 'switch' || dom === 'input_boolean'), off = !sw || una || this.inert(row, v);
+    const act = sw ? `data-i="${i}" data-w="1" data-lp="${esc(row.entity)}"` : `data-more="${esc(row.entity)}"`;
+    return `<button class="w${on ? ' on' : ''}${sw ? '' : ' ro'}" ${act} aria-pressed="${on}"${sw && off ? ' aria-disabled="true"' : ''}>`
+      + `<span>${esc(name)}</span><span class="ws">${esc(txt)}</span></button>`;
+  }
   // Writable control for the row, or null (read-only domain).
   control(dom, row, s, i, name) {
     const a = s.attributes, t = this._t, dis = s.state === 'unavailable' ? ' disabled' : '';
     if (dom === 'switch' || dom === 'input_boolean') {
       const p = this._pd && this._pd[row.entity], v = p ? { ...s, state: p.v } : s;
       return `${row.fmt ? `<span class="v">${esc(fmtState(row.fmt, v, this.ctx(), row))}</span>` : ''}`
-        + `<input class="tg" type="checkbox" data-i="${i}"${v.state === 'on' ? ' checked' : ''}${dis}>`;
+        + `<input class="tg" type="checkbox" data-i="${i}"${v.state === 'on' ? ' checked' : ''}${dis || (this.inert(row, v) ? ' disabled' : '')}>`;
     }
     if (dom === 'select') {
       const tx = (x) => (OPT[row.fmt] && OPT[row.fmt][x] ? t(OPT[row.fmt][x]) : x);
@@ -1243,9 +1327,7 @@ class IrryRowsCard extends IrryCard {
       return `<label><input type="number" step="${whole ? 1 : 'any'}" data-i="${i}" value="${esc(show)}"${dis}> ${esc(x ? x[1] : u || '')}</label>`;
     }
     if (dom === 'button') {
-      // off: inactive while that entity has one of those states (the press would do nothing).
-      const off = row.off && [].concat(row.off.state).includes((this._h.states[row.off.entity] || {}).state);
-      return `<button data-i="${i}"${dis || (off ? ' disabled' : '')}>${esc(name)}</button>`;
+      return `<button data-i="${i}"${dis || (this.inert(row, s) ? ' disabled' : '')}>${esc(name)}</button>`;
     }
     if (dom === 'time') return `<input type="time" data-i="${i}" value="${esc(/^\d\d:\d\d/.test(s.state) ? s.state.slice(0, 5) : '')}"${dis}>`;
     return null;
@@ -1253,6 +1335,8 @@ class IrryRowsCard extends IrryCard {
   async write(row, el) {
     // The reason is shown in the card: HA's own toast (notifyOnError, 5th argument) stays off.
     const h = this._h, call = (d, sv, data, tg) => h.callService(d, sv, data, tg, false), s = h.states[row.entity], dom = row.entity.split('.')[0], target = { entity_id: row.entity };
+    // An inert control does nothing (the disabled element already takes no input).
+    if (s && this.inert(row, s)) { el.blur(); return; }
     this._err = ''; this._ok = '';
     try {
       // Zone N Manual: the zone action (firmware 2.6.1) answers why an opening is refused; the switch does not.
@@ -1274,8 +1358,14 @@ class IrryRowsCard extends IrryCard {
       else if (dom === 'button') {
         if (row.confirm && !window.confirm(row.confirm)) return;
         await call('button', 'press', {}, target);
-        // A visible answer for a press whose effect may not show at once (Ignore Wind), gone after ERR_MS.
-        if (row.ok) { const ok = this._ok = row.ok; setTimeout(() => { if (this._ok === ok) { this._ok = ''; this._sig = ''; if (this._h) this.hass = this._h; } }, this._ems || ERR_MS); }
+        // A visible answer for a press whose effect may not show at once (Ignore Wind, Find Device), gone after
+        // ERR_MS, or with hold at the end of the command (the button inert meanwhile).
+        const hold = row.hold && (this._hms || row.hold);
+        if (hold) {
+          (this._hd = this._hd || {})[row.entity] = Date.now() + hold;
+          setTimeout(() => { this._sig = ''; if (this._h) this.hass = this._h; }, hold + 50);
+        }
+        if (row.ok) { const ok = this._ok = row.ok; setTimeout(() => { if (this._ok === ok) { this._ok = ''; this._sig = ''; if (this._h) this.hass = this._h; } }, hold || this._ems || ERR_MS); }
       } else if (dom === 'number') {
         // Shown in the device unit, written in the entity's own unit, on its step and within its range.
         const a = s.attributes, u = a.unit_of_measurement, x = devValue(parseFloat(s.state), u, this._m.imp);

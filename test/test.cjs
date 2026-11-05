@@ -775,20 +775,103 @@ function refs(o, out = []) {
     ok(!cards.some((c) => c.type === 'tile' && /close_all|ignore_wind/.test(c.entity)), 'status: Close all and Ignore Wind in Zones, not tiles');
     ok(cards.filter((c) => c.type === 'tile' && !c.hide_state).every((c) => c.tap_action && c.tap_action.action === 'more-info'), 'status: state tiles open the history');
     const zr = cards.find((c) => c.irr), z = mk(lib.IrryRowsCard, zr, h0);
-    const btn = (k) => (z.html().match(new RegExp(`<button data-i="${zr.rows.findIndex((r) => r.entity && r.entity.endsWith(k))}"[^>]*>`)) || [''])[0];
+    const btn = (k) => (z.html().match(new RegExp(`<button[^>]*data-i="${zr.rows.findIndex((r) => r.entity && r.entity.endsWith(k))}"[^>]*>`)) || [''])[0];
     ok(/^<div class="rows"><div class="msg top"/.test(z.html().replace(/^[\s\S]*?<ha-card>(<h1[^]*?<\/h1>)?/, '')), 'zones: message line above the rows');
-    ok(/disabled/.test(btn('close_all_zone_valves')) && /disabled/.test(btn('ignore_wind')), 'zones: buttons inactive with nothing open and no wind pause');
+    ok(/disabled/.test(btn('close_all_zone_valves')) && !zr.rows.some((r) => /ignore_wind$/.test(r.entity || '')), 'zones: Close all inactive with nothing open, no Ignore Wind');
     let hh = put(put(h0, 'Zone Active', 'Zona 1'), 'Wind Pause', 'paused'); z.card.hass = hh;
-    ok(!/disabled/.test(btn('close_all_zone_valves')) && !/disabled/.test(btn('ignore_wind')), 'zones: buttons active with a zone open and a wind pause');
+    ok(!/disabled/.test(btn('close_all_zone_valves')), 'zones: Close all active with a zone open');
     ok(z.html().includes(`${t('now_run')}: Zona 1`) && z.html().includes(t('wp')), 'zones: running zone and wind pause in the message line');
     hh = put(hh, 'Programs Paused', 'on'); z.card.hass = hh;
     ok(z.html().includes(t('paused')), 'zones: pause in the message line');
-    z.card._ems = 30;
-    const ir = zr.rows.find((r) => r.entity && r.entity.endsWith('ignore_wind'));
-    await z.card.write(ir, { blur() {}, classList: { add() {} } });
-    ok(/data-k="ok"[^>]*>/.test(z.html()) && z.html().includes(t('wind_ignd')) && hh.calls.some((c) => c.service === 'press'), 'ignore wind: visible answer');
+  }
+  // ---- 0.4.5: Ignore Wind in Rain and wind, inert controls (firmware refusals), Find Device answer
+  {
+    const nm = (hh, name) => Object.keys(hh.entities).find((i) => hh.entities[i].name === name);
+    const put = (hh, name, v) => { const id = nm(hh, name); return { ...hh, states: { ...hh.states, [id]: { ...hh.states[id], state: v } }, calls: hh.calls }; };
+    const h0 = fakeHass(), sv = await reg['ll-strategy-view-irry-status'].generate({}, h0), cards = sv.sections.flatMap((x) => x.cards);
+    const cardOf = (cc, k) => cc.find((c) => c.rows && c.rows.some((r) => new RegExp(`${k}$`).test(r.entity || '')));
+    const ctl = (card, cfg, k) => (card.html().match(new RegExp(`<(?:button|input)[^>]*data-i="${cfg.rows.findIndex((r) => r.entity && r.entity.endsWith(k))}"[^>]*>`)) || [''])[0];
+    const EL = { blur() {}, classList: { add() {} } };
+    // Ignore Wind: in the rain and wind card, with its message line; inert without a wind pause or wait.
+    const wc = cardOf(cards, 'ignore_wind'), w = mk(lib.IrryRowsCard, wc, h0);
+    ok(wc && !wc.irr && wc.rows.some((r) => /wind_pause$/.test(r.entity || '')), 'ignore wind: in the rain and wind card');
+    ok(/disabled/.test(ctl(w, wc, 'ignore_wind')) && /<div class="msg" data-k=""/.test(w.html()), 'ignore wind: inert, message line reserved');
+    let hh = put(h0, 'Wind Pause', 'waiting'); w.card.hass = hh;
+    ok(!/disabled/.test(ctl(w, wc, 'ignore_wind')), 'ignore wind: active while waiting');
+    w.card._ems = 30;
+    await w.card.write(wc.rows.find((r) => /ignore_wind$/.test(r.entity || '')), EL);
+    ok(w.html().includes(t('wind_ignd')) && hh.calls.some((c) => c.service === 'press'), 'ignore wind: answer in its card');
     await new Promise((r) => setTimeout(r, 80));
-    ok(!z.html().includes(t('wind_ignd')), 'ignore wind: answer gone after the timeout');
+    ok(!w.html().includes(t('wind_ignd')), 'ignore wind: answer gone after the timeout');
+    // No control left as a tile with an action other than history (a tile cannot be inert).
+    ok(!cards.some((c) => c.type === 'tile' && /aux$|find_device|silence_alarm/.test(c.entity)), 'status: Aux, Find, Silence not tiles');
+    // Aux: inert in Sync mode and during an install, active otherwise.
+    const ac = cardOf(cards, 'switch\\..*_aux'), a = mk(lib.IrryRowsCard, ac, h0), cnt = h0.calls.length;
+    ok(/disabled/.test(ctl(a, ac, '_aux')), 'aux: inert in Sync mode');
+    await a.card.write(ac.rows.find((r) => /_aux$/.test(r.entity)), { ...EL, checked: true });
+    ok(h0.calls.length === cnt, 'aux: no call while inert');
+    hh = put(h0, 'Aux Mode', 'On'); a.card.hass = hh;
+    ok(!/disabled/.test(ctl(a, ac, '_aux')), 'aux: active in On mode');
+    a.card.hass = put(hh, 'Firmware Update Status', 'installing');
+    ok(/disabled/.test(ctl(a, ac, '_aux')), 'aux: inert during an install');
+    // Silence Alarm: inert with the time valid or the buzzer off.
+    a.card.hass = put(h0, 'Time Valid', 'on');
+    ok(/disabled/.test(ctl(a, ac, 'silence_alarm')), 'silence: inert with the time valid');
+    a.card.hass = put(put(h0, 'Time Valid', 'off'), 'Alarm Sound', 'On');
+    ok(!/disabled/.test(ctl(a, ac, 'silence_alarm')), 'silence: active with an alarm possible');
+    a.card.hass = put(put(h0, 'Time Valid', 'off'), 'Alarm Sound', 'Off');
+    ok(/disabled/.test(ctl(a, ac, 'silence_alarm')), 'silence: inert with the buzzer off');
+    // Full-width buttons in Stato: Valve Power, Aux, Pause programs one per line, state on the button.
+    const wk = ac.rows.filter((r) => r.wide).map((r) => r.entity.replace(/^.*_8dee48_/, ''));
+    ok(['valve_power', 'aux', 'programs_paused'].every((k, i) => wk[i] === k), `status: full-width valve, aux, pause ${wk}`);
+    a.card.hass = put(put(h0, 'Programs Paused', 'on'), 'Valve Power', 'off');
+    const pb = ctl(a, ac, 'programs_paused');
+    ok(/class="w on"/.test(pb) && /aria-pressed="true"/.test(pb) && /data-lp=/.test(pb), 'pause: filled while on, long press = history');
+    ok(a.html().includes(`<span>${t('vp')}</span><span class="ws">${t('vp_off')}</span>`) && /class="w ro" data-more=/.test(a.html()), 'valve power: state on the button, tap = history');
+    // Find Device in Diagnostics: answer and inert for the command time, then active again.
+    const stv = await reg['ll-strategy-view-irry-settings'].generate({}, h0), sall = [];
+    (function walk(o) { if (o && typeof o === 'object') { if (o.type === 'custom:irry-rows-card') sall.push(o); Object.values(o).forEach(walk); } })(JSON.parse(JSON.stringify(stv)));
+    ok(!cardOf(cards, 'find_device') && sall.filter((c) => cardOf([c], 'find_device')).length === 1 && cardOf(sall, 'find_device').rows.some((r) => /time_source$/.test(r.entity || '')), 'find: only in Diagnostics');
+    const fdc = cardOf(sall, 'find_device'), fd = mk(lib.IrryRowsCard, fdc, h0); fd.card._hms = 60;
+    ok(/class="w"/.test(ctl(fd, fdc, 'find_device')) && !/disabled/.test(ctl(fd, fdc, 'find_device')), 'find: full width, active');
+    await fd.card.write(fdc.rows.find((r) => /find_device$/.test(r.entity)), EL);
+    ok(fd.html().includes(t('find_ok')) && /data-k="ok"/.test(fd.html()) && /disabled/.test(ctl(fd, fdc, 'find_device')), 'find: answer, inert while running');
+    await new Promise((r) => setTimeout(r, 120));
+    ok(!fd.html().includes(t('find_ok')) && !/disabled/.test(ctl(fd, fdc, 'find_device')), 'find: active again at the end');
+    // Close all and Ignore Wind: full width, same style.
+    ok(cards.find((c) => c.irr).rows.find((r) => /close_all/.test(r.entity || '')).wide && wc.rows.find((r) => /ignore_wind/.test(r.entity || '')).wide, 'close all, ignore wind: full width');
+    // An inert full-width switch still has the long press (aria-disabled, not disabled).
+    a.card.hass = h0;
+    ok(/aria-disabled="true"/.test(ctl(a, ac, '_aux')) && /data-lp=/.test(ctl(a, ac, '_aux')), 'aux: inert, history still reachable');
+    // Zones: opening inert with MAXO zones open or during an install; closing always possible.
+    const zc = cards.find((c) => c.irr);
+    let h3 = h0; for (const n of [1, 2, 3]) h3 = put(h3, `Zone ${n} Manual`, 'on');
+    const z = mk(lib.IrryRowsCard, zc, h3);
+    ok(/disabled/.test(ctl(z, zc, 'zone_4_manual')) && !/disabled/.test(ctl(z, zc, 'zone_1_manual')), 'zones: 4th opening inert, closing active');
+    z.card.hass = put(h0, 'Firmware Update Status', 'verifying');
+    ok(/disabled/.test(ctl(z, zc, 'zone_1_manual')), 'zones: opening inert while verifying');
+    z.card.hass = h0;
+    ok(!/disabled/.test(ctl(z, zc, 'zone_1_manual')), 'zones: opening active otherwise');
+    // Firmware Check and Install (Settings).
+    const st = await reg['ll-strategy-view-irry-settings'].generate({}, h0);
+    const sc = JSON.parse(JSON.stringify(st)), all = []; (function walk(o) { if (o && typeof o === 'object') { if (o.type === 'custom:irry-rows-card') all.push(o); Object.values(o).forEach(walk); } })(sc);
+    const fc = cardOf(all, 'firmware_check'), f = mk(lib.IrryRowsCard, fc, h0);
+    const soon = new Date(Date.now() + 3600e3).toISOString();
+    let hf = put(put(put(h0, 'Firmware Update Mode', 'Notify'), 'Next Irrigation', soon), 'Zone Active', '-'); f.card.hass = put(hf, 'Wind Pause', 'off');
+    ok(!/disabled/.test(ctl(f, fc, 'firmware_check')) && !/disabled/.test(ctl(f, fc, 'firmware_install')), 'fw: check and install active');
+    f.card.hass = put(hf, 'Firmware Update Mode', 'Off');
+    ok(/disabled/.test(ctl(f, fc, 'firmware_check')), 'fw: check inert with updates off');
+    f.card.hass = put(hf, 'Firmware Update Status', 'checking');
+    ok(/disabled/.test(ctl(f, fc, 'firmware_check')), 'fw: check inert while checking');
+    hf = put(hf, 'Wind Pause', 'off');
+    for (const [nmx, v, why] of [['Zone Active', 'Zona 1', 'a zone open'], ['Wind Pause', 'paused', 'a wind pause'],
+      ['Next Irrigation', new Date(Date.now() + 300e3).toISOString(), 'a start in 5 min'], ['Firmware Update Status', '2.4.1 available (manual)', 'a manual version']]) {
+      f.card.hass = put(hf, nmx, v);
+      ok(/disabled/.test(ctl(f, fc, 'firmware_install')), `fw: install inert with ${why}`);
+    }
+    // Find Device: same answer, no static note.
+    const dc = cardOf(all, 'find_device');
+    ok(dc.rows.find((r) => /find_device$/.test(r.entity)).hold === 10e3 && !all.some((c) => c.rows.some((r) => r.note === t('find_ok'))), 'settings: Find Device with answer, no note');
   }
   console.log(`test.cjs: ${n} checks, ${fail} failed`);
   process.exit(fail ? 1 : 0);
