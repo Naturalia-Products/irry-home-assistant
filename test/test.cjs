@@ -549,7 +549,7 @@ function refs(o, out = []) {
     await rf.card.write(rf.card._c.rows[0], fe('Metric'));
     const fh = rf.html(); hf.fail = null;
     await rf.card.write(rf.card._c.rows[0], fe('Metric'));
-    ok(/ha-alert alert-type="error">Unità: Errore: boom/.test(fh) && !rf.html().includes('<ha-alert'), 'rows: write error shown, then cleared');
+    ok(/class="msg"[^>]*>Unità: Errore: boom<\/div><\/div>/.test(fh) && /class="msg"[^>]*><\/div>/.test(rf.html()), 'rows: write error at the bottom, then cleared (line kept)');
     rf.card.shadowRoot.activeElement = { tagName: 'HA-SELECTOR' };
     ok(rf.card.busy() === true, 'busy: ha-selector');
     rf.card.shadowRoot.activeElement = null;
@@ -670,7 +670,7 @@ function refs(o, out = []) {
     ok(hz.calls.pop().data.on === false, 'zone action: close');
     hz.fail = 'Failed to execute the action call it7ws_8dee48_zone on Irry The Seven 8dee48: open_limit';
     await rc.card.write(row, fe({ checked: true })); hz.fail = null;
-    ok(rc.html().includes('<ha-alert') && rc.html().includes(t('e_open_limit')), 'zone refused: open_limit shown');
+    ok(/class="msg"[^>]*>[^<]+/.test(rc.html()) && rc.html().includes(t('e_open_limit')), 'zone refused: open_limit shown');
     for (const [code, k] of [['ota_pv', 'e_ota_pv'], ['zone', 'e_zone'], ['limit', 'e_limit']])
       ok(lib.errText(cx(hz).m, t, 'it', new Error(`Failed to execute the action call x on y: ${code}`)) === t(k), `errText ${code}`);
     ok(lib.errText(cx(hz).m, t, 'it', 'nolimit').startsWith(t('e_generic', { err: '' }).trim().slice(0, 4)), 'errText: a word ending in limit is not the code');
@@ -734,6 +734,34 @@ function refs(o, out = []) {
     ok(r3.html().includes(t('e_open_limit')), 'refused again: reason shown');
     await new Promise((r) => setTimeout(r, 80));
     ok(!r3.html().includes('<ha-alert') && !r3.html().includes(t('e_open_limit')) && r3.card._err === '', 'reason gone after the timeout');
+  }
+  // ---- 0.4.3: constant height on the Status view
+  {
+    const nm = (hh, name) => Object.keys(hh.entities).find((i) => hh.entities[i].name === name);
+    const put = (hh, name, v) => { const id = nm(hh, name); return { ...hh, states: { ...hh.states, [id]: { ...hh.states[id], state: v } } }; };
+    const fe = (x) => ({ blur() {}, classList: { add() {} }, ...x });
+    const shape = (c) => (c.html().match(/class="(r|msg|h|note)[" ]/g) || []).join();
+    const h0 = fakeHass(), sv = await reg['ll-strategy-view-irry-status'].generate({}, h0), cards = sv.sections.flatMap((x) => x.cards);
+    const js = JSON.stringify(sv);
+    ok(!js.includes('"visibility"') && !js.includes('hide_empty'), 'status: no card or row shown on a condition');
+    const st = sv.sections.find((x) => x.cards.some((c) => c.heading === t('st')));
+    ok(st && st.cards.findIndex((c) => c.heading === t('m_meth')) > st.cards.findIndex((c) => c.heading === t('st')), 'status: duration adaptation below Stato, same section');
+    const zr = cards.find((c) => c.type === 'custom:irry-rows-card' && c.rows.some((r) => /zone_1_manual$/.test(r.entity)));
+    const z = mk(lib.IrryRowsCard, zr, h0), s0 = shape(z);
+    ok(s0.includes('msg') && z.html().includes('—'), 'zones: message line reserved, empty end shown as —');
+    let hh = put(put(h0, 'Zone 1 Manual', 'on'), 'Zone 1 End', '2026-11-05T10:00:00+00:00'); z.card.hass = hh;
+    ok(shape(z) === s0, 'zones: same rows with a zone open');
+    hh.fail = 'Failed: open_limit'; z.card._ems = 30;
+    await z.card.write(zr.rows[0], fe({ checked: true }));
+    ok(shape(z) === s0 && z.html().includes(t('e_open_limit')), 'zones: same rows with the message');
+    await new Promise((r) => setTimeout(r, 80));
+    ok(shape(z) === s0 && !z.html().includes(t('e_open_limit')), 'zones: same rows after the message');
+    // Banner: a zone opened or programs paused replace a line, they do not add one.
+    const M = (x) => lib.irryModel(x), C = (x) => ({ h: x, m: M(x), t, l: 'it' }), n0 = lib.alerts(M(h0), C(h0)).length;
+    const h1 = put(h0, 'Zone Active', 'Zona 1'), h2 = put(h1, 'Programs Paused', 'on');
+    ok(lib.alerts(M(h1), C(h1)).length === n0 && lib.alerts(M(h2), C(h2)).length === n0, `banner: same lines on commands ${n0}`);
+    // Events: room for five lines from the start.
+    { const ec = mk(reg['irry-events-card'], { device: 'dev1' }, fakeHass()); ok(/rows ev5/.test(ec.html()), 'events: room for five lines'); }
   }
   console.log(`test.cjs: ${n} checks, ${fail} failed`);
   process.exit(fail ? 1 : 0);

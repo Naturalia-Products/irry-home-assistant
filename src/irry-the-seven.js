@@ -12,7 +12,7 @@
 // Units: the device "Units" select (Auto = from the time zone), as in the device UI; HA sensor values
 // are converted from whatever unit HA shows them in. Graphs keep the HA unit.
 
-const IRRY_VERSION = '0.4.2';
+const IRRY_VERSION = '0.4.3';
 const I18N = /*I18N*/ {} /*END*/;
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -569,9 +569,10 @@ function statusView(m, t) {
   // Zones as rows: a tile would show the switch state (On / Off) where the valve is Open / Closed.
   const zt = rows(m, m.zones.flatMap((n) => [
     { k: `zone_${n}_manual`, name: m.label(n), fmt: 'open', edit: true, zone: n },
-    { k: `zone_${n}_end`, name: `${m.label(n)} · ${t('x_end')}`, hide_empty: true },
+    // Always shown ("—" while empty): rows appearing on a command would resize the card.
+    { k: `zone_${n}_end`, name: `${m.label(n)} · ${t('x_end')}`, dash: true },
     // Firmware 2.6.0: the zone's own next start (empty = none); a rain skip is said by the banner.
-    { k: `zone_${n}_next_start`, name: `${m.label(n)} · ${t('next')}`, fmt: 'ts', hide_empty: true },
+    { k: `zone_${n}_next_start`, name: `${m.label(n)} · ${t('next')}`, fmt: 'ts', dash: true },
   ]));
   return {
     type: 'sections', max_columns: 4,
@@ -583,24 +584,32 @@ function statusView(m, t) {
           { k: 'zone_active', name: t('now_run'), fmt: 'zact' },
           { k: 'problems', name: t('x_problems'), fmt: 'prob', ref: E('irrigation_overlap_warning') || undefined },
           { k: 'next_irrigation', name: t('next'), fmt: 'next', ref: E('programs_paused') || undefined },
-          { k: 'wind_resume', name: t('x_wind_res'), fmt: 'ts', hide_empty: true },
+          { k: 'wind_resume', name: t('x_wind_res'), fmt: 'ts', dash: true },
         ]),
         has('valve_power') && tile(E('valve_power'), { name: t('vp') }),
         has('programs_paused') && tile(E('programs_paused'), { name: t('pause'), tap_action: toggle }),
         has('close_all_zone_valves') && tile(E('close_all_zone_valves'), {
           name: t('close_all'), icon: 'mdi:water-off', color: 'red', hide_state: true,
           tap_action: press(E('close_all_zone_valves'), { confirmation: { text: t('x_close_q') } }),
-          ...(has('zone_active') ? { visibility: [{ condition: 'state', entity: E('zone_active'), state_not: ['-', ...BAD] }] } : {}),
         }),
+        // Close all and Ignore Wind always shown (no visibility): tiles appearing would move the view;
+        // with nothing open or no wind pause the firmware does nothing.
         has('ignore_wind') && has('wind_pause') && tile(E('ignore_wind'), {
           name: t('wind_ign'), icon: 'mdi:weather-windy', hide_state: true, tap_action: press(E('ignore_wind')),
-          visibility: [{ condition: 'state', entity: E('wind_pause'), state_not: ['off', ...BAD] }],
         }),
         m.aux && has('aux') && tile(E('aux'), { name: auxName && !BAD.includes(auxName) ? auxName : t('aux_def'), tap_action: toggle }),
         // Buttons: no state line (HA would show the last press, or "Unknown").
         has('find_device') && tile(E('find_device'), { name: t('find'), icon: 'mdi:map-marker-radius-outline', hide_state: true, tap_action: press(E('find_device')) }),
         // Waveshare only (x8 has no beeper); no entity tells whether an alarm sounds, so it is always shown.
         has('silence_alarm') && tile(E('silence_alarm'), { name: t('silence'), icon: 'mdi:volume-off', hide_state: true, tap_action: press(E('silence_alarm')) }),
+        // Duration adaptation in the same section: below Stato in every layout (a section of its own flows beside it).
+        heading(t('m_meth'), 'mdi:sprout'),
+        rows(m, [
+          { k: 'irrigation_method', name: t('m_meth'), fmt: 'method' },
+          { k: 'weather_data', name: t('x_wdata'), fmt: 'wdata', refs: [E('weather_days_used'), E('weather_fallback')].filter(Boolean) },
+          { k: 'irrigation_factor', name: t('m_f') },
+          { k: 'irrigation_et0_yesterday', name: t('m_et0y') },
+        ]),
       ]),
       section([heading(t('zones'), 'mdi:map-marker-radius'), zt]),
       E('last_event') && section([
@@ -619,15 +628,6 @@ function statusView(m, t) {
           { k: 'weather_wind_gust', name: `${t('w_gust')} / ${t('rain_thr')}`, fmt: 'pair', int: true, ref: E('wind_gust_threshold') || undefined },
           { k: 'wind_over_threshold', name: t('x_wind_over'), fmt: 'yes' },
           { k: 'wind_pause', name: t('wp'), fmt: 'wpause' },
-        ]),
-      ]),
-      section([
-        heading(t('m_meth'), 'mdi:sprout'),
-        rows(m, [
-          { k: 'irrigation_method', name: t('m_meth'), fmt: 'method' },
-          { k: 'weather_data', name: t('x_wdata'), fmt: 'wdata', refs: [E('weather_days_used'), E('weather_fallback')].filter(Boolean) },
-          { k: 'irrigation_factor', name: t('m_f') },
-          { k: 'irrigation_et0_yesterday', name: t('m_et0y') },
         ]),
       ]),
     ].filter(Boolean),
@@ -1010,6 +1010,7 @@ const CSS = `
   .msg{font-size:14px;min-height:1.2em} .err{color:var(--error-color)} .ok{color:var(--success-color,#43a047)}
   .z{display:flex;gap:6px;align-items:center;margin:2px 0}
   .rows{padding:4px 16px 8px} .r{display:flex;align-items:center;gap:12px;min-height:40px}
+  .msg{height:2.6em;line-height:1.3em;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;color:var(--error-color);font-size:.9em;border-top:1px solid var(--divider-color);padding-top:4px}
   .r + .r{border-top:1px solid var(--divider-color)}
   .r .n{flex:1;color:var(--secondary-text-color)} .r .v{color:var(--primary-text-color);text-align:right}
   .r.tap{cursor:pointer} .r input[type=text]{width:12em} .r select{max-width:16em} .r ha-selector{flex:0 1 18em;min-width:12em}
@@ -1062,9 +1063,10 @@ function alerts(m, c) {
   const t = c.t, st = m.st, A = [], add = (type, text) => A.push([type, text]);
   const f = (k) => { const s = m.so(k); return s ? fmtState('', s, c) : ''; };
   if (st('zone_active') === 'unavailable') return [['error', t('offline')]];
-  const za = st('zone_active');
-  if (za && za !== '-' && !BAD.includes(za)) add('info', `${t('now_run')}: ${za}`);
-  if (st('programs_paused') === 'on') add('warning', t('paused'));
+  // Running zone and pause share one line, always there: a line added by a command would resize the banner.
+  const za = st('zone_active'), run = za && za !== '-' && !BAD.includes(za), pz = st('programs_paused') === 'on';
+  const L0 = pz ? ['warning', run ? `${t('paused')} · ${t('now_run')}: ${za}` : t('paused')] : run ? ['info', `${t('now_run')}: ${za}`] : null;
+  if (L0) add(...L0);
   const ok = (k) => { const v = st(k); return v && !BAD.includes(v) ? v : ''; };
   if (st('rain_skip_active') === 'on') {
     // As the device: the next start of a zone sheltered from rain, else the note when one is sheltered.
@@ -1108,7 +1110,8 @@ function alerts(m, c) {
   const fw = st('firmware_update_status') || '';
   if (/ available/.test(fw)) add('info', fwText(t, fw));
   if (st('wi_fi_fallback_active') === 'on' || st('wi_fi_network') === 'fallback') add('info', t('x_wifi_fb'));
-  return A.length ? A : [['success', t('allok')]];
+  if (!A.length) return [['success', t('allok')]];
+  return L0 ? A : [['info', `${t('now_run')}: —`], ...A];
 }
 class IrryBannerCard extends IrryCard {
   connectedCallback() { this._tick = setInterval(() => { if (this._h) { this._seen = null; this.hass = this._h; } }, 60e3); }
@@ -1134,6 +1137,7 @@ function rowShown(h, row) { return !row.only || [].concat(row.only.state).includ
 // Read-only rows open the HA more-info dialog; edit rows write with the entity's own service.
 // A toggle keeps the requested state until the entity reports it, at most PEND_MS (as PEND in the device UI).
 const PEND_MS = 10e3, ERR_MS = 3e3;
+const EMPTY = (v) => !v || v === '-' || BAD.includes(v);
 class IrryRowsCard extends IrryCard {
   getCardSize() { return 1 + ((this._c && this._c.rows) || []).length; }
   // Pending toggles: dropped once the entity has the requested state, or after PEND_MS.
@@ -1155,7 +1159,7 @@ class IrryRowsCard extends IrryCard {
     const avail = (row) => ((h.states[row.ref] || {}).state || '').match(/^(\S+) available/);
     const list = (this._c.rows || []).map((row, i) => ({ row, i, s: row.entity && h.states[row.entity] }))
       .filter(({ row }) => rowShown(h, row))
-      .filter(({ row, s }) => row.head || row.note || row.value || (s && !(row.hide_empty && (BAD.includes(s.state) || s.state === '-'))))
+      .filter(({ row, s }) => row.head || row.note || row.value || (s && !(row.hide_empty && EMPTY(s.state))))
       .filter(({ row }) => row.fmt !== 'fwgo' || avail(row));
     const html = [];
     list.forEach(({ row, i, s }, j) => {
@@ -1170,10 +1174,11 @@ class IrryRowsCard extends IrryCard {
       const ctl = row.edit ? this.control(dom, row, s, i, name) : null;
       html.push(ctl
         ? `<div class="r"><span class="n">${dom === 'button' ? '' : esc(name)}</span>${ctl}</div>`
-        : `<div class="r tap" data-more="${esc(row.entity)}"><span class="n">${esc(name)}</span><span class="v">${esc(fmtState(row.fmt, s, c, row))}</span></div>`);
+        : `<div class="r tap" data-more="${esc(row.entity)}"><span class="n">${esc(name)}</span><span class="v">${esc(row.dash && EMPTY(s.state) ? '—' : fmtState(row.fmt, s, c, row))}</span></div>`);
     });
-    const err = this._err ? `<ha-alert alert-type="error">${esc(this._err)}</ha-alert>` : '';
-    r.innerHTML = `<style>${CSS}</style><ha-card>${this._c.title ? `<h1 class="card-header">${esc(this._c.title)}</h1>` : ''}<div class="rows">${err}${html.join('')}</div></ha-card>`;
+    // Message line at the bottom, reserved (empty) on cards that write: the card keeps its height.
+    const msg = (this._c.rows || []).some((x) => x.edit) ? `<div class="msg" role="status" title="${esc(this._err || '')}">${esc(this._err || '')}</div>` : '';
+    r.innerHTML = `<style>${CSS}</style><ha-card>${this._c.title ? `<h1 class="card-header">${esc(this._c.title)}</h1>` : ''}<div class="rows">${html.join('')}${msg}</div></ha-card>`;
     r.querySelectorAll('[data-more]').forEach((el) => el.addEventListener('click', () => this.more(el.dataset.more)));
     r.querySelectorAll('[data-i]').forEach((el) => {
       const row = this._c.rows[+el.dataset.i];
@@ -1810,8 +1815,8 @@ class IrryEventsCard extends IrryGetCard {
     const more = L.length > 5 ? `<button class="s more">${esc(all ? t('x_ev_less') : `${t('x_ev_all')} (${L.length})`)}</button>` : '';
     r.innerHTML = `<style>${CSS}
       .tm{flex:none;min-width:7.5em;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;white-space:nowrap}
-      .ev{flex:1;color:var(--primary-text-color)} .more{margin:4px 0 0 -6px}</style>`
-      + `<ha-card><div class="rows">${rows || `<div class="note">${esc(t('x_ev_none'))}</div>`}${more}</div></ha-card>`;
+      .ev{flex:1;color:var(--primary-text-color)} .more{margin:4px 0 0 -6px} .ev5{min-height:205px}</style>`
+      + `<ha-card><div class="rows ev5">${rows || `<div class="note">${esc(t('x_ev_none'))}</div>`}${more}</div></ha-card>`;
     const b = r.querySelector('.more');
     if (b) b.onclick = () => { this._all = !all; this._sig = ''; this.hass = this._h; };
   }
