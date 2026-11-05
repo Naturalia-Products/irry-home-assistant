@@ -33,7 +33,7 @@ function refs(o, out = []) {
     const bad = r.filter((e) => !h.states[e]);
     ok(bad.length === 0, `${prefix}: unknown entities ${bad.join(' ')}`);
     ok(r.length > 100, `${prefix}: ${r.length} references`);
-    ok(JSON.stringify(d.views[0].sections[0]).includes('irry-banner-card'), `${prefix}: banner card`);
+    ok(!JSON.stringify(d.views[0]).includes('irry-banner-card') && JSON.stringify(d.views[0]).includes('"irr":true'), `${prefix}: no banner, irrigation lines in Zones`);
     // No raw firmware name left: every tile and row carries the name in the device words.
     const unnamed = [];
     (function walk(o) {
@@ -762,6 +762,33 @@ function refs(o, out = []) {
     ok(lib.alerts(M(h1), C(h1)).length === n0 && lib.alerts(M(h2), C(h2)).length === n0, `banner: same lines on commands ${n0}`);
     // Events: room for five lines from the start.
     { const ec = mk(reg['irry-events-card'], { device: 'dev1' }, fakeHass()); ok(/rows ev5/.test(ec.html()), 'events: room for five lines'); }
+  }
+  // ---- 0.4.4: no banner on Status; its lines in the cards, inactive buttons, Ignore Wind answer, taps
+  {
+    const nm = (hh, name) => Object.keys(hh.entities).find((i) => hh.entities[i].name === name);
+    const put = (hh, name, v) => { const id = nm(hh, name); return { ...hh, states: { ...hh.states, [id]: { ...hh.states[id], state: v } } }; };
+    const h0 = fakeHass(), sv = await reg['ll-strategy-view-irry-status'].generate({}, h0), cards = sv.sections.flatMap((x) => x.cards);
+    const rowsOf = (k) => cards.filter((c) => c.rows).flatMap((c) => c.rows).find((r) => new RegExp(`${k}$`).test(r.entity || ''));
+    // Every banner subject has a card row: health, firmware, Wi-Fi, station, battery, weather data.
+    ok(['problems', 'firmware_update_status', 'wi_fi_network', 'weather_feed', 'weather_battery', 'weather_data', 'zone_active', 'rain_skip_active', 'wind_pause']
+      .every((k) => rowsOf(k)), 'status: banner subjects in the cards');
+    ok(!cards.some((c) => c.type === 'tile' && /close_all|ignore_wind/.test(c.entity)), 'status: Close all and Ignore Wind in Zones, not tiles');
+    ok(cards.filter((c) => c.type === 'tile' && !c.hide_state).every((c) => c.tap_action && c.tap_action.action === 'more-info'), 'status: state tiles open the history');
+    const zr = cards.find((c) => c.irr), z = mk(lib.IrryRowsCard, zr, h0);
+    const btn = (k) => (z.html().match(new RegExp(`<button data-i="${zr.rows.findIndex((r) => r.entity && r.entity.endsWith(k))}"[^>]*>`)) || [''])[0];
+    ok(/^<div class="rows"><div class="msg top"/.test(z.html().replace(/^[\s\S]*?<ha-card>(<h1[^]*?<\/h1>)?/, '')), 'zones: message line above the rows');
+    ok(/disabled/.test(btn('close_all_zone_valves')) && /disabled/.test(btn('ignore_wind')), 'zones: buttons inactive with nothing open and no wind pause');
+    let hh = put(put(h0, 'Zone Active', 'Zona 1'), 'Wind Pause', 'paused'); z.card.hass = hh;
+    ok(!/disabled/.test(btn('close_all_zone_valves')) && !/disabled/.test(btn('ignore_wind')), 'zones: buttons active with a zone open and a wind pause');
+    ok(z.html().includes(`${t('now_run')}: Zona 1`) && z.html().includes(t('wp')), 'zones: running zone and wind pause in the message line');
+    hh = put(hh, 'Programs Paused', 'on'); z.card.hass = hh;
+    ok(z.html().includes(t('paused')), 'zones: pause in the message line');
+    z.card._ems = 30;
+    const ir = zr.rows.find((r) => r.entity && r.entity.endsWith('ignore_wind'));
+    await z.card.write(ir, { blur() {}, classList: { add() {} } });
+    ok(/data-k="ok"[^>]*>/.test(z.html()) && z.html().includes(t('wind_ignd')) && hh.calls.some((c) => c.service === 'press'), 'ignore wind: visible answer');
+    await new Promise((r) => setTimeout(r, 80));
+    ok(!z.html().includes(t('wind_ignd')), 'ignore wind: answer gone after the timeout');
   }
   console.log(`test.cjs: ${n} checks, ${fail} failed`);
   process.exit(fail ? 1 : 0);

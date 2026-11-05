@@ -12,7 +12,7 @@
 // Units: the device "Units" select (Auto = from the time zone), as in the device UI; HA sensor values
 // are converted from whatever unit HA shows them in. Graphs keep the HA unit.
 
-const IRRY_VERSION = '0.4.3';
+const IRRY_VERSION = '0.4.4';
 const I18N = /*I18N*/ {} /*END*/;
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -478,6 +478,8 @@ function fmtState(f, s, c, row = {}) {
       return src && !BAD.includes(src.state) ? `${val} · ${fmtState('pos', src, c)}` : val;
     }
     case 'yes': return t(v === 'on' ? K('x_yes') : K('x_no'));
+    case 'fwst': return BAD.includes(v) ? '-' : fwText(t, v);
+    case 'batt': return BAD.includes(v) ? '-' : t(v === 'on' ? K('m_batt_low') : K('m_batt_ok'));
     case 'batt': return t(v === 'on' ? K('m_batt_low') : K('m_batt_ok'));
     case 'zact': return BAD.includes(v) || v === '-' ? t('m_none') : v;
     case 'ts': return BAD.includes(v) ? '-' : fmtTime(v, c);
@@ -523,7 +525,7 @@ function fmtState(f, s, c, row = {}) {
 
 // ---------------------------------------------------------------- views
 const tile = (entity, x = {}) => ({ type: 'tile', entity, ...x });
-const toggle = { action: 'toggle' };
+const toggle = { action: 'toggle' }, MORE = { action: 'more-info' };
 const shown = (entity) => [{ condition: 'state', entity, state_not: BAD }];
 const heading = (text, icon) => ({ type: 'heading', heading: text, ...(icon ? { icon } : {}) });
 const section = (cards, x = {}) => ({ type: 'grid', cards: cards.filter(Boolean), ...x });
@@ -540,6 +542,7 @@ function rows(m, list, x = {}) {
   const r = list.filter((e) => e && (!e.only || m.E(e.only.k)) && (e.head || e.note || e.value || m.E(e.k))).map((e) => {
     const o = e.head || e.note || e.value ? { ...e } : { ...e, entity: m.E(e.k) };
     if (o.only) o.only = o.only.state === undefined ? undefined : { entity: m.E(e.only.k), state: e.only.state };
+    if (o.off) o.off = m.E(e.off.k) ? { entity: m.E(e.off.k), state: e.off.state } : undefined;
     delete o.k;
     for (const k of Object.keys(o)) if (o[k] === undefined) delete o[k];
     return o;
@@ -573,11 +576,15 @@ function statusView(m, t) {
     { k: `zone_${n}_end`, name: `${m.label(n)} · ${t('x_end')}`, dash: true },
     // Firmware 2.6.0: the zone's own next start (empty = none); a rain skip is said by the banner.
     { k: `zone_${n}_next_start`, name: `${m.label(n)} · ${t('next')}`, fmt: 'ts', dash: true },
-  ]));
+  ]).concat([
+    // Inactive while they would do nothing: no zone open; no wind pause or wait (the firmware ignores the press then).
+    { k: 'close_all_zone_valves', name: t('close_all'), edit: true, confirm: t('x_close_q'), off: { k: 'zone_active', state: ['-', '', ...BAD] } },
+    has('wind_pause') && { k: 'ignore_wind', name: t('wind_ign'), edit: true, ok: t('wind_ignd'), off: { k: 'wind_pause', state: ['off', ...BAD] } },
+  ]), { irr: true, msg_top: true });
   return {
     type: 'sections', max_columns: 4,
     sections: [
-      section([{ type: 'custom:irry-banner-card', device: m.dev.id, grid_options: { columns: 'full' } }], { column_span: 4 }),
+      // No banner: its lines are in the cards (irrigation in Zones, health in Stato, weather in Duration adaptation).
       section([
         heading(t('st'), 'mdi:sprinkler-variant'),
         rows(m, [
@@ -585,19 +592,15 @@ function statusView(m, t) {
           { k: 'problems', name: t('x_problems'), fmt: 'prob', ref: E('irrigation_overlap_warning') || undefined },
           { k: 'next_irrigation', name: t('next'), fmt: 'next', ref: E('programs_paused') || undefined },
           { k: 'wind_resume', name: t('x_wind_res'), fmt: 'ts', dash: true },
+          // Before firmware 2.6.0 (no Problems): the clock state.
+          !has('problems') && { k: 'time_valid', name: t('x_tvalid'), fmt: 'yes' },
+          { k: 'firmware_update_status', name: t('fw'), fmt: 'fwst' },
+          has('wi_fi_network') ? { k: 'wi_fi_network', name: t('wifi'), fmt: 'wifi' } : { k: 'wi_fi_fallback_active', name: t('wfb_chip'), fmt: 'yes' },
         ]),
-        has('valve_power') && tile(E('valve_power'), { name: t('vp') }),
-        has('programs_paused') && tile(E('programs_paused'), { name: t('pause'), tap_action: toggle }),
-        has('close_all_zone_valves') && tile(E('close_all_zone_valves'), {
-          name: t('close_all'), icon: 'mdi:water-off', color: 'red', hide_state: true,
-          tap_action: press(E('close_all_zone_valves'), { confirmation: { text: t('x_close_q') } }),
-        }),
-        // Close all and Ignore Wind always shown (no visibility): tiles appearing would move the view;
-        // with nothing open or no wind pause the firmware does nothing.
-        has('ignore_wind') && has('wind_pause') && tile(E('ignore_wind'), {
-          name: t('wind_ign'), icon: 'mdi:weather-windy', hide_state: true, tap_action: press(E('ignore_wind')),
-        }),
-        m.aux && has('aux') && tile(E('aux'), { name: auxName && !BAD.includes(auxName) ? auxName : t('aux_def'), tap_action: toggle }),
+        // Tiles with a state: tap = history (more-info) as every read-only row, icon = the action.
+        has('valve_power') && tile(E('valve_power'), { name: t('vp'), tap_action: MORE }),
+        has('programs_paused') && tile(E('programs_paused'), { name: t('pause'), tap_action: MORE, icon_tap_action: toggle }),
+        m.aux && has('aux') && tile(E('aux'), { name: auxName && !BAD.includes(auxName) ? auxName : t('aux_def'), tap_action: MORE, icon_tap_action: toggle }),
         // Buttons: no state line (HA would show the last press, or "Unknown").
         has('find_device') && tile(E('find_device'), { name: t('find'), icon: 'mdi:map-marker-radius-outline', hide_state: true, tap_action: press(E('find_device')) }),
         // Waveshare only (x8 has no beeper); no entity tells whether an alarm sounds, so it is always shown.
@@ -609,6 +612,8 @@ function statusView(m, t) {
           { k: 'weather_data', name: t('x_wdata'), fmt: 'wdata', refs: [E('weather_days_used'), E('weather_fallback')].filter(Boolean) },
           { k: 'irrigation_factor', name: t('m_f') },
           { k: 'irrigation_et0_yesterday', name: t('m_et0y') },
+          { k: 'weather_feed', name: t('m_eco'), fmt: 'feed' },
+          { k: 'weather_battery', name: t('m_batt'), fmt: 'batt' },
         ]),
       ]),
       section([heading(t('zones'), 'mdi:map-marker-radius'), zt]),
@@ -1010,7 +1015,9 @@ const CSS = `
   .msg{font-size:14px;min-height:1.2em} .err{color:var(--error-color)} .ok{color:var(--success-color,#43a047)}
   .z{display:flex;gap:6px;align-items:center;margin:2px 0}
   .rows{padding:4px 16px 8px} .r{display:flex;align-items:center;gap:12px;min-height:40px}
-  .msg{height:2.6em;line-height:1.3em;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;color:var(--error-color);font-size:.9em;border-top:1px solid var(--divider-color);padding-top:4px}
+  .msg{height:2.6em;line-height:1.3em;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;color:var(--secondary-text-color);font-size:.9em;border-top:1px solid var(--divider-color);padding-top:4px}
+  .msg[data-k=err]{color:var(--error-color)} .msg[data-k=ok]{color:var(--success-color)} .msg[data-k=warn]{color:var(--warning-color)}
+  .msg.top{border-top:0;border-bottom:1px solid var(--divider-color);padding:4px 0}
   .r + .r{border-top:1px solid var(--divider-color)}
   .r .n{flex:1;color:var(--secondary-text-color)} .r .v{color:var(--primary-text-color);text-align:right}
   .r.tap{cursor:pointer} .r input[type=text]{width:12em} .r select{max-width:16em} .r ha-selector{flex:0 1 18em;min-width:12em}
@@ -1061,8 +1068,32 @@ const BANNER_KEYS = ['zone_active', 'programs_paused', 'rain_skip_active', 'rain
   'weather_fallback', 'weather_days_used'];
 function alerts(m, c) {
   const t = c.t, st = m.st, A = [], add = (type, text) => A.push([type, text]);
-  const f = (k) => { const s = m.so(k); return s ? fmtState('', s, c) : ''; };
   if (st('zone_active') === 'unavailable') return [['error', t('offline')]];
+  const L0 = irrLines(m, c, A);
+  const pr = m.so('problems');
+  if (pr && pr.state !== 'unknown') probCodes(pr.state).forEach((p) => add(p === 'clock_bad' ? 'error' : 'warning', probText(m, t, c.l, p)));
+  else if (st('time_valid') === 'off') add('error', t('ch_time_bad'));
+  const wd = st('weather_data');
+  if (wd === 'missing') add('warning', t('x_wd_missing'));
+  if (wd === 'fallback') { const u = wdUsed(m, t); add('info', u ? `${t('m_data')}: ${u}` : t('x_wd_fallback')); }  // x_wd_fallback: before 2.6.1
+  const fd = st('weather_feed');
+  if (fd === 'unpaired') add('warning', t('x_feed_unpaired'));
+  if (fd === 'stale') add('warning', t('x_feed_stale'));
+  if (st('weather_battery') === 'on') add('warning', `${t('m_batt')}: ${t('m_batt_low')}`);
+  const ov = st('irrigation_overlap_warning');
+  if (!pr && ov && !BAD.includes(ov)) add('info', `${t('ovl')}: ${ovlText(m, t, c.l, ov)}`);
+  const fw = st('firmware_update_status') || '';
+  if (/ available/.test(fw)) add('info', fwText(t, fw));
+  if (st('wi_fi_fallback_active') === 'on' || st('wi_fi_network') === 'fallback') add('info', t('x_wifi_fb'));
+  if (!A.length) return [['success', t('allok')]];
+  return L0 ? A : [['info', `${t('now_run')}: —`], ...A];
+}
+// Irrigation lines (running zone and pause in one, rain skip, wind) into A; returns the running / pause line or null.
+// The banner and the message line of the Zones card.
+function irrLines(m, c, A = []) {
+  const t = c.t, st = m.st, add = (type, text) => A.push([type, text]);
+  const f = (k) => { const s = m.so(k); return s ? fmtState('', s, c) : ''; };
+  if (st('zone_active') === 'unavailable') { add('error', t('offline')); return null; }
   // Running zone and pause share one line, always there: a line added by a command would resize the banner.
   const za = st('zone_active'), run = za && za !== '-' && !BAD.includes(za), pz = st('programs_paused') === 'on';
   const L0 = pz ? ['warning', run ? `${t('paused')} · ${t('now_run')}: ${za}` : t('paused')] : run ? ['info', `${t('now_run')}: ${za}`] : null;
@@ -1094,24 +1125,7 @@ function alerts(m, c) {
     add('warning', A.join(' · '));
   }
   if (st('wind_over_threshold') === 'on' && wp === 'off') add('info', t('wind_over_nx'));
-  // Health from the firmware (Problems); before 2.6.0 only the clock and the overlap entities.
-  const pr = m.so('problems');
-  if (pr && pr.state !== 'unknown') probCodes(pr.state).forEach((p) => add(p === 'clock_bad' ? 'error' : 'warning', probText(m, t, c.l, p)));
-  else if (st('time_valid') === 'off') add('error', t('ch_time_bad'));
-  const wd = st('weather_data');
-  if (wd === 'missing') add('warning', t('x_wd_missing'));
-  if (wd === 'fallback') { const u = wdUsed(m, t); add('info', u ? `${t('m_data')}: ${u}` : t('x_wd_fallback')); }  // x_wd_fallback: before 2.6.1
-  const fd = st('weather_feed');
-  if (fd === 'unpaired') add('warning', t('x_feed_unpaired'));
-  if (fd === 'stale') add('warning', t('x_feed_stale'));
-  if (st('weather_battery') === 'on') add('warning', `${t('m_batt')}: ${t('m_batt_low')}`);
-  const ov = st('irrigation_overlap_warning');
-  if (!pr && ov && !BAD.includes(ov)) add('info', `${t('ovl')}: ${ovlText(m, t, c.l, ov)}`);
-  const fw = st('firmware_update_status') || '';
-  if (/ available/.test(fw)) add('info', fwText(t, fw));
-  if (st('wi_fi_fallback_active') === 'on' || st('wi_fi_network') === 'fallback') add('info', t('x_wifi_fb'));
-  if (!A.length) return [['success', t('allok')]];
-  return L0 ? A : [['info', `${t('now_run')}: —`], ...A];
+  return L0;
 }
 class IrryBannerCard extends IrryCard {
   connectedCallback() { this._tick = setInterval(() => { if (this._h) { this._seen = null; this.hass = this._h; } }, 60e3); }
@@ -1149,8 +1163,11 @@ class IrryRowsCard extends IrryCard {
   signature() {
     if (!this._m) return 'none';
     const h = this._h, ids = [], pd = this.settle();
-    for (const r of this._c.rows || []) ids.push(r.entity, r.ref, r.only && r.only.entity, ...(r.refs || []));
-    return JSON.stringify([this._l, this._m.imp, this._m.zones.map(this._m.label), this._err || '', pd,
+    for (const r of this._c.rows || []) ids.push(r.entity, r.ref, r.only && r.only.entity, r.off && r.off.entity, ...(r.refs || []));
+    // irr: the irrigation lines of the banner (minute: the wind resume countdown).
+    if (this._c.irr) ids.push(...BANNER_KEYS.map(this._m.E), ...this._m.zones.map((n) => this._m.E(`zone_${n}_sheltered_from_rain`)));
+    return JSON.stringify([this._l, this._m.imp, this._m.zones.map(this._m.label), this._err || '', this._ok || '', pd,
+      this._c.irr && this._m.st('wind_pause') === 'paused' ? Math.floor(Date.now() / 60000) : 0,
       ids.map((i) => { const s = i && h.states[i]; return s && [s.state, s.attributes.unit_of_measurement]; })]);
   }
   paint() {
@@ -1176,9 +1193,16 @@ class IrryRowsCard extends IrryCard {
         ? `<div class="r"><span class="n">${dom === 'button' ? '' : esc(name)}</span>${ctl}</div>`
         : `<div class="r tap" data-more="${esc(row.entity)}"><span class="n">${esc(name)}</span><span class="v">${esc(row.dash && EMPTY(s.state) ? '—' : fmtState(row.fmt, s, c, row))}</span></div>`);
     });
-    // Message line at the bottom, reserved (empty) on cards that write: the card keeps its height.
-    const msg = (this._c.rows || []).some((x) => x.edit) ? `<div class="msg" role="status" title="${esc(this._err || '')}">${esc(this._err || '')}</div>` : '';
-    r.innerHTML = `<style>${CSS}</style><ha-card>${this._c.title ? `<h1 class="card-header">${esc(this._c.title)}</h1>` : ''}<div class="rows">${html.join('')}${msg}</div></ha-card>`;
+    // Message line, reserved (empty) on cards that write: the card keeps its height. Refusal, then the
+    // confirmation of a button (row.ok), then (irr) the irrigation lines of the banner. msg_top: above the rows.
+    const il = [];
+    if (this._c.irr) irrLines(this._m, c, il);
+    const [mk, mt] = this._err ? ['err', this._err] : this._ok ? ['ok', this._ok]
+      : il.length ? [il.some(([y]) => y !== 'info') ? 'warn' : 'info', il.map(([, x]) => x).join(' · ')] : ['', ''];
+    const msg = this._c.irr || (this._c.rows || []).some((x) => x.edit)
+      ? `<div class="msg${this._c.msg_top ? ' top' : ''}" data-k="${mk}" role="status" title="${esc(mt)}">${esc(mt)}</div>` : '';
+    const top = this._c.msg_top ? msg : '', bot = this._c.msg_top ? '' : msg;
+    r.innerHTML = `<style>${CSS}</style><ha-card>${this._c.title ? `<h1 class="card-header">${esc(this._c.title)}</h1>` : ''}<div class="rows">${top}${html.join('')}${bot}</div></ha-card>`;
     r.querySelectorAll('[data-more]').forEach((el) => el.addEventListener('click', () => this.more(el.dataset.more)));
     r.querySelectorAll('[data-i]').forEach((el) => {
       const row = this._c.rows[+el.dataset.i];
@@ -1218,14 +1242,18 @@ class IrryRowsCard extends IrryCard {
       const show = x ? String(+x[0].toFixed(whole ? 0 : x[2])) : isNaN(v) ? '' : String(v);
       return `<label><input type="number" step="${whole ? 1 : 'any'}" data-i="${i}" value="${esc(show)}"${dis}> ${esc(x ? x[1] : u || '')}</label>`;
     }
-    if (dom === 'button') return `<button data-i="${i}"${dis}>${esc(name)}</button>`;
+    if (dom === 'button') {
+      // off: inactive while that entity has one of those states (the press would do nothing).
+      const off = row.off && [].concat(row.off.state).includes((this._h.states[row.off.entity] || {}).state);
+      return `<button data-i="${i}"${dis || (off ? ' disabled' : '')}>${esc(name)}</button>`;
+    }
     if (dom === 'time') return `<input type="time" data-i="${i}" value="${esc(/^\d\d:\d\d/.test(s.state) ? s.state.slice(0, 5) : '')}"${dis}>`;
     return null;
   }
   async write(row, el) {
     // The reason is shown in the card: HA's own toast (notifyOnError, 5th argument) stays off.
     const h = this._h, call = (d, sv, data, tg) => h.callService(d, sv, data, tg, false), s = h.states[row.entity], dom = row.entity.split('.')[0], target = { entity_id: row.entity };
-    this._err = '';
+    this._err = ''; this._ok = '';
     try {
       // Zone N Manual: the zone action (firmware 2.6.1) answers why an opening is refused; the switch does not.
       const za = row.zone && this._m && this._m.action('zone');
@@ -1246,6 +1274,8 @@ class IrryRowsCard extends IrryCard {
       else if (dom === 'button') {
         if (row.confirm && !window.confirm(row.confirm)) return;
         await call('button', 'press', {}, target);
+        // A visible answer for a press whose effect may not show at once (Ignore Wind), gone after ERR_MS.
+        if (row.ok) { const ok = this._ok = row.ok; setTimeout(() => { if (this._ok === ok) { this._ok = ''; this._sig = ''; if (this._h) this.hass = this._h; } }, this._ems || ERR_MS); }
       } else if (dom === 'number') {
         // Shown in the device unit, written in the entity's own unit, on its step and within its range.
         const a = s.attributes, u = a.unit_of_measurement, x = devValue(parseFloat(s.state), u, this._m.imp);
