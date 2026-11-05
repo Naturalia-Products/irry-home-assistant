@@ -12,7 +12,7 @@
 // Units: the device "Units" select (Auto = from the time zone), as in the device UI; HA sensor values
 // are converted from whatever unit HA shows them in. Graphs keep the HA unit.
 
-const IRRY_VERSION = '0.4.5';
+const IRRY_VERSION = '0.4.6';
 const I18N = /*I18N*/ {} /*END*/;
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -524,8 +524,6 @@ function fmtState(f, s, c, row = {}) {
 }
 
 // ---------------------------------------------------------------- views
-const tile = (entity, x = {}) => ({ type: 'tile', entity, ...x });
-const shown = (entity) => [{ condition: 'state', entity, state_not: BAD }];
 const heading = (text, icon) => ({ type: 'heading', heading: text, ...(icon ? { icon } : {}) });
 const section = (cards, x = {}) => ({ type: 'grid', cards: cards.filter(Boolean), ...x });
 const noDevice = (t) => ({
@@ -577,26 +575,27 @@ function tabbed(m, view, tabs, def, layout) {
 // Inert conditions from the firmware refusals, shared by the views.
 const FW_BUSY = '^(installing|verifying)$';  // Firmware Update Status during an install and the verify after it
 // Zone N Manual: an opening is refused during an install (ota_pv) and with MAXO zones open (open_limit); closing never.
-const zoneOff = (m) => ({ off: [{ k: 'firmware_update_status', re: FW_BUSY }, { ks: m.zones.map((n) => `zone_${n}_manual`), state: 'on', n: MAXO }], off_on: true });
+const zoneOff = (m, t) => ({ off: [{ k: 'firmware_update_status', re: FW_BUSY, why: t('x_why_fw') },
+  { ks: m.zones.map((n) => `zone_${n}_manual`), state: 'on', n: MAXO, why: t('e_open_limit') }], off_on: true });
 const FIND_MS = 10e3, LONG_MS = 500;  // LONG_MS: long press = history  // the firmware's Find Device time
 // Find Device: the answer stays for the command time, the button inert meanwhile.
 const findRow = (m, t, name) => ({ k: 'find_device', name, edit: true, wide: true, ok: t(m.E('alarm_sound') ? K('find_ok') : K('x_find_led')), hold: FIND_MS });
 // Silence Alarm: the alarm sounds only with the time not valid and the buzzer on (quiet hours are not known to HA).
-const silenceRow = (t, x = {}) => ({ k: 'silence_alarm', name: t('silence'), edit: true, ...x, off: [{ k: 'time_valid', state: 'on' }, { k: 'alarm_sound', state: 'Off' }] });
+const silenceRow = (t, x = {}) => ({ k: 'silence_alarm', name: t('silence'), edit: true, ...x, off: [{ k: 'time_valid', state: 'on', why: t('x_why_noalarm') }, { k: 'alarm_sound', state: 'Off', why: t('x_why_buzoff') }] });
 
 function statusView(m, t) {
   const E = m.E, has = (k) => !!E(k);
   const auxName = m.st('aux_label');
   // Zones as rows: a tile would show the switch state (On / Off) where the valve is Open / Closed.
   const zt = rows(m, m.zones.flatMap((n) => [
-    { k: `zone_${n}_manual`, name: m.label(n), fmt: 'open', edit: true, zone: n, ...zoneOff(m) },
+    { k: `zone_${n}_manual`, name: m.label(n), fmt: 'open', edit: true, zone: n, ...zoneOff(m, t) },
     // Always shown ("—" while empty): rows appearing on a command would resize the card.
-    { k: `zone_${n}_end`, name: `${m.label(n)} · ${t('x_end')}`, dash: true },
+    { k: `zone_${n}_end`, name: `${m.label(n)} · ${t('x_end')}`, fmt: 'ts', dash: true },
     // Firmware 2.6.0: the zone's own next start (empty = none); a rain skip is said by the banner.
     { k: `zone_${n}_next_start`, name: `${m.label(n)} · ${t('next')}`, fmt: 'ts', dash: true },
   ]).concat([
     // Inactive while it would do nothing: no zone open.
-    { k: 'close_all_zone_valves', name: t('close_all'), edit: true, wide: true, confirm: t('x_close_q'), off: { k: 'zone_active', state: ['-', '', ...BAD] } },
+    { k: 'close_all_zone_valves', name: t('close_all'), edit: true, wide: true, confirm: t('x_close_q'), off: { k: 'zone_active', state: ['-', '', ...BAD], why: t('x_why_nozone') } },
   ]), { irr: true, msg_top: true });
   return {
     type: 'sections', max_columns: 4,
@@ -620,7 +619,7 @@ function statusView(m, t) {
         rows(m, [
           { k: 'valve_power', name: t('vp'), wide: true, st: [t('vp_on'), t('vp_off')] },
           m.aux && { k: 'aux', name: auxName && !BAD.includes(auxName) ? auxName : t('aux_def'), edit: true, wide: true, st: [t('vp_on'), t('vp_off')],
-            off: [{ k: 'aux_mode', state: 'Sync' }, { k: 'firmware_update_status', state: 'installing' }] },
+            off: [{ k: 'aux_mode', state: 'Sync', why: t('x_why_sync') }, { k: 'firmware_update_status', state: 'installing', why: t('x_why_fw') }] },
           { k: 'programs_paused', name: t('pause'), edit: true, wide: true, st: [t('x_yes'), t('x_no')] },
           silenceRow(t, { wide: true }),
         ]),
@@ -653,7 +652,7 @@ function statusView(m, t) {
           { k: 'wind_over_threshold', name: t('x_wind_over'), fmt: 'yes' },
           { k: 'wind_pause', name: t('wp'), fmt: 'wpause' },
           // Ignored by the firmware without a wind pause or wait; its answer in the card's message line.
-          { k: 'ignore_wind', name: t('wind_ign'), edit: true, wide: true, ok: t('wind_ignd'), off: { k: 'wind_pause', state: ['off', ...BAD] } },
+          { k: 'ignore_wind', name: t('wind_ign'), edit: true, wide: true, ok: t('wind_ignd'), off: { k: 'wind_pause', state: ['off', ...BAD], why: t('x_why_nowind') } },
         ]),
       ]),
     ].filter(Boolean),
@@ -664,10 +663,11 @@ function irrigationView(m, t) {
   const E = m.E, has = (k) => !!E(k), dev = m.dev.id;
   const zone = (n) => section([
     heading(zoneHead(m, t, n), 'mdi:sprinkler-variant'),
-    has(`zone_${n}_end`) && tile(E(`zone_${n}_end`), { name: t('x_end'), visibility: shown(E(`zone_${n}_end`)) }),
     rows(m, [
+      // The end of the opening, in the format of the next start (a tile shows a long date).
+      { k: `zone_${n}_end`, name: t('x_end'), fmt: 'ts', hide_empty: true },
       { k: `zone_${n}_next_start`, name: t('next'), fmt: 'ts', hide_empty: true },
-      { k: `zone_${n}_manual`, name: t('x_man_open'), fmt: 'open', edit: true, zone: n, ...zoneOff(m) },
+      { k: `zone_${n}_manual`, name: t('x_man_open'), fmt: 'open', edit: true, zone: n, ...zoneOff(m, t) },
       { k: `zone_${n}_irrigation_factor`, name: t('x_zf') },
     ]),
     { type: 'custom:irry-slot-card', device: dev, zone: n, grid_options: { columns: 'full' } },
@@ -895,12 +895,12 @@ function settingsView(m, t) {
           { k: 'firmware_update_mode', name: t('x_fwm'), fmt: 'fwm', edit: true },
           // Check: refused with updates Off and while a check or an install runs.
           { k: 'firmware_check', name: t('fwn_check'), edit: true,
-            off: [{ k: 'firmware_update_mode', state: 'Off' }, { k: 'firmware_update_status', re: '^(checking|installing|verifying)$' }] },
+            off: [{ k: 'firmware_update_mode', state: 'Off', why: t('x_why_fwoff') }, { k: 'firmware_update_status', re: '^(checking|installing|verifying)$', why: t('x_why_fwrun') }] },
           // Install (HA button, no force): refused for a manual-only version, with a zone open, during a wind pause or
           // wait, and with the next start less than 10 min away (firmware FW_LEAD_S).
           { k: 'firmware_install', name: t('fwn_go'), fmt: 'fwgo', ref: E('firmware_update_status') || undefined, edit: true,
-            off: [{ k: 'firmware_update_status', re: 'available \\(manual\\)' }, { k: 'zone_active', not: ['-', ''] },
-              { k: 'wind_pause', state: ['waiting', 'paused'] }, { k: 'next_irrigation', soon: 600 }] },
+            off: [{ k: 'firmware_update_status', re: 'available \\(manual\\)', why: t('x_why_manual') }, { k: 'zone_active', not: ['-', ''], why: t('e_fw_window') },
+              { k: 'wind_pause', state: ['waiting', 'paused'], why: t('e_fw_window') }, { k: 'next_irrigation', soon: 600, why: t('e_fw_window') }] },
           { k: 'firmware_last_check', name: t('fwn_last'), fmt: 'tsago' },
         ]),
         m.action('get') && { type: 'custom:irry-notes-card', device: m.dev.id, grid_options: { columns: 'full' } },
@@ -1023,7 +1023,7 @@ const CSS = `
   .days{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
   button.day{width:34px;height:34px;border-radius:50%;padding:0;font-weight:500;background:none;
     border:1px solid var(--divider-color);color:var(--secondary-text-color)}
-  button.day.on{background:var(--blue-color,#2196f3);border-color:transparent;color:#fff;font-weight:700}
+  button.day.on{background:var(--primary-color);border-color:transparent;color:var(--text-primary-color,#fff);font-weight:700}
   button.day.all{width:auto;height:30px;border-radius:6px;padding:0 10px;margin-left:8px;align-self:center;font-size:13px;
     border:1px dashed var(--divider-color);color:var(--primary-color);background:none;font-weight:500}
   button.day.all.on{border-style:solid;border-color:var(--primary-color)}
@@ -1033,7 +1033,10 @@ const CSS = `
   button.w{display:flex;width:100%;min-height:40px;align-items:center;justify-content:center;gap:6px;background:rgba(127,127,127,.15);
     color:var(--primary-text-color);user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;touch-action:manipulation}
   button.w.on{background:var(--primary-color);color:var(--text-primary-color,#fff)} button.w .ws{font-weight:500} button.w .ws::before{content:'· '}
-  button.w.ro{cursor:pointer} button.w[aria-disabled=true]{opacity:.5;cursor:default}
+  button.w.ro{cursor:pointer} button.w[aria-disabled=true]{background:none;box-shadow:inset 0 0 0 1px var(--divider-color);color:var(--primary-text-color);cursor:default}
+  button.w.on[aria-disabled=true]{box-shadow:inset 0 0 0 2px var(--primary-color)} button.w[aria-disabled=true] .ws{color:var(--primary-color)}
+  button:not(.w)[aria-disabled=true]{background:none;box-shadow:inset 0 0 0 1px var(--divider-color);color:var(--secondary-text-color);cursor:default}
+  .tg[aria-disabled=true]{cursor:default;outline:1px dashed var(--secondary-text-color);outline-offset:2px}
   button.mv{width:32px;height:32px;padding:0;border-radius:50%;background:none;color:var(--secondary-text-color);display:inline-flex;
     align-items:center;justify-content:center} button.mv:hover{background:rgba(127,127,127,.15);color:var(--primary-text-color)}
   button.mv:disabled{visibility:hidden} .z label{flex:1;color:var(--primary-text-color)}
@@ -1043,7 +1046,7 @@ const CSS = `
   .tg{appearance:none;-webkit-appearance:none;width:36px;height:20px;border-radius:10px;border:0;padding:0;margin:0;
     background:rgba(127,127,127,.45);position:relative;cursor:pointer;flex:none}
   .tg::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left .15s}
-  .tg:checked{background:var(--blue-color,#2196f3)} .tg:checked::after{left:18px}
+  .tg:checked{background:var(--primary-color)} .tg:checked::after{left:18px}
   .msg{font-size:14px;min-height:1.2em} .err{color:var(--error-color)} .ok{color:var(--success-color,#43a047)}
   .z{display:flex;gap:6px;align-items:center;margin:2px 0}
   .rows{padding:4px 16px 8px} .r{display:flex;align-items:center;gap:12px;min-height:40px}
@@ -1187,9 +1190,10 @@ const EMPTY = (v) => !v || v === '-' || BAD.includes(v);
 // A control is inert (disabled, no action) while one of its off conditions holds: the firmware would refuse or ignore
 // the command then. { entity, state } one of those states; { entity, not } none of them; { entity, re } the state
 // matches; { entity, soon: s } a timestamp less than s seconds away; { entities, state, n } n or more in that state.
+// The reason (c.why) of the first condition that holds, or ''.
 function offHit(h, row) {
   const st = (e) => (h.states[e] || {}).state;
-  return (row.off || []).some((c) => {
+  const c = (row.off || []).find((c) => {
     if (c.entities) return c.entities.filter((e) => [].concat(c.state).includes(st(e))).length >= c.n;
     const v = st(c.entity);
     if (v === undefined) return false;
@@ -1198,6 +1202,7 @@ function offHit(h, row) {
     if (c.not) return !BAD.includes(v) && ![].concat(c.not).includes(v);
     return [].concat(c.state).includes(v);
   });
+  return c ? c.why || '-' : '';
 }
 
 class IrryRowsCard extends IrryCard {
@@ -1216,7 +1221,7 @@ class IrryRowsCard extends IrryCard {
     const tm = (this._c.rows || []).some((r) => (r.off || []).some((x) => x.soon)) ? Math.floor(Date.now() / 30e3) : 0;
     // irr: the irrigation lines of the banner (minute: the wind resume countdown).
     if (this._c.irr) ids.push(...BANNER_KEYS.map(this._m.E), ...this._m.zones.map((n) => this._m.E(`zone_${n}_sheltered_from_rain`)));
-    return JSON.stringify([this._l, this._m.imp, this._m.zones.map(this._m.label), this._err || '', this._ok || '', pd, tm, this.held(),
+    return JSON.stringify([this._l, this._m.imp, this._m.zones.map(this._m.label), this._err || '', this._why || '', this._ok || '', pd, tm, this.held(),
       this._c.irr && this._m.st('wind_pause') === 'paused' ? Math.floor(Date.now() / 60000) : 0,
       ids.map((i) => { const s = i && h.states[i]; return s && [s.state, s.attributes.unit_of_measurement]; })]);
   }
@@ -1242,13 +1247,13 @@ class IrryRowsCard extends IrryCard {
       const ctl = row.edit ? this.control(dom, row, s, i, name) : null;
       html.push(ctl
         ? `<div class="r"><span class="n">${dom === 'button' ? '' : esc(name)}</span>${ctl}</div>`
-        : `<div class="r tap" data-more="${esc(row.entity)}"><span class="n">${esc(name)}</span><span class="v">${esc(row.dash && EMPTY(s.state) ? '—' : fmtState(row.fmt, s, c, row))}</span></div>`);
+        : `<div class="r tap" data-more="${esc(row.entity)}"><span class="n">${esc(name)}</span><span class="v">${esc(((x) => (row.dash && (EMPTY(s.state) || x === '-') ? '—' : x))(fmtState(row.fmt, s, c, row)))}</span></div>`);
     });
     // Message line, reserved (empty) on cards that write: the card keeps its height. Refusal, then the
     // confirmation of a button (row.ok), then (irr) the irrigation lines of the banner. msg_top: above the rows.
     const il = [];
     if (this._c.irr) irrLines(this._m, c, il);
-    const [mk, mt] = this._err ? ['err', this._err] : this._ok ? ['ok', this._ok]
+    const [mk, mt] = this._err ? ['err', this._err] : this._why ? ['warn', this._why] : this._ok ? ['ok', this._ok]
       : il.length ? [il.some(([y]) => y !== 'info') ? 'warn' : 'info', il.map(([, x]) => x).join(' · ')] : ['', ''];
     const msg = this._c.irr || (this._c.rows || []).some((x) => x.edit)
       ? `<div class="msg${this._c.msg_top ? ' top' : ''}" data-k="${mk}" role="status" title="${esc(mt)}">${esc(mt)}</div>` : '';
@@ -1267,7 +1272,14 @@ class IrryRowsCard extends IrryCard {
       const row = this._c.rows[+el.dataset.i];
       // Full-width switch: a button whose press asks the other state (aria-pressed = the state shown).
       if (el.dataset.w) el.addEventListener('click', () => { if (this._lp) { this._lp = false; return; } this.write(row, { checked: el.getAttribute('aria-pressed') !== 'true', blur: () => el.blur() }); });
-      else el.addEventListener(el.tagName === 'BUTTON' ? 'click' : 'change', () => this.write(row, el));
+      else if (el.classList.contains('tg')) {
+        // Inert toggle: the tap does not move it (preventDefault), its reason is shown.
+        el.addEventListener('click', (e) => {
+          const s = this._h.states[row.entity], p = this._pd && this._pd[row.entity], why = s && this.inert(row, p ? { ...s, state: p.v } : s);
+          if (why) { e.preventDefault(); this.deny(row, why); }
+        });
+        el.addEventListener('change', () => this.write(row, el));
+      } else el.addEventListener(el.tagName === 'BUTTON' ? 'click' : 'change', () => this.write(row, el));
     });
     // Entity picker of HA (ha-selector, loaded by the HA frontend) in place of a text field.
     r.querySelectorAll('[data-pk]').forEach((el) => {
@@ -1286,20 +1298,33 @@ class IrryRowsCard extends IrryCard {
     return Object.keys(hd);
   }
   // Inert: an off condition holds (off_on: only while the switch is off, the closing is always allowed), or held.
+  // The reason (truthy) or ''.
   inert(row, v) {
-    if (row.hold && this.held().includes(row.entity)) return true;
-    return offHit(this._h, row) && !(row.off_on && v && v.state === 'on');
+    if (row.hold && this.held().includes(row.entity)) return row.ok || '-';
+    return row.off_on && v && v.state === 'on' ? '' : offHit(this._h, row);
   }
-  // Full-width button: a press (button), a switch with its state on the button (filled while on), or a read-only
-  // state (tap = history). Inert: aria-disabled, so the long press for the history still works; write() does nothing.
+  // Tap on an inert control: its reason in the message line for ERR_MS, no command.
+  deny(row, why) {
+    // A full-width switch: its history is on the long press.
+    const lp = row.wide && /^(switch|input_boolean)\./.test(row.entity) ? ` · ${this._t('x_why_hist')}` : '';
+    const msg = this._why = `${row.name || row.entity}: ${why}${lp}`;
+    this._sig = ''; this.hass = this._h;
+    setTimeout(() => { if (this._why === msg) { this._why = ''; this._sig = ''; if (this._h) this.hass = this._h; } }, this._ems || ERR_MS);
+  }
+  // Full-width button: a press (button, filled while it can act), a switch with its state on the button (filled while
+  // on), or a read-only state (tap = history). Inert: aria-disabled (outlined, readable), a tap says why, long press
+  // = history; unavailable: disabled.
   wide(dom, row, s, i, name) {
     const t = this._t, una = s.state === 'unavailable';
-    if (dom === 'button') return `<button class="w" data-i="${i}"${una || this.inert(row, s) ? ' disabled' : ''}>${esc(name)}</button>`;
+    if (dom === 'button') {
+      const ia = !una && this.inert(row, s);
+      return `<button class="w${ia || una ? '' : ' on'}" data-i="${i}"${una ? ' disabled' : ia ? ' aria-disabled="true"' : ''}>${esc(name)}</button>`;
+    }
     const p = this._pd && this._pd[row.entity], v = p ? { ...s, state: p.v } : s, on = v.state === 'on', st = row.st || [t('vp_on'), t('vp_off')];
     const txt = BAD.includes(v.state) ? t('x_unav') : on ? st[0] : st[1];
-    const sw = row.edit && (dom === 'switch' || dom === 'input_boolean'), off = !sw || una || this.inert(row, v);
+    const sw = row.edit && (dom === 'switch' || dom === 'input_boolean'), off = sw && (una || this.inert(row, v));
     const act = sw ? `data-i="${i}" data-w="1" data-lp="${esc(row.entity)}"` : `data-more="${esc(row.entity)}"`;
-    return `<button class="w${on ? ' on' : ''}${sw ? '' : ' ro'}" ${act} aria-pressed="${on}"${sw && off ? ' aria-disabled="true"' : ''}>`
+    return `<button class="w${on ? ' on' : ''}${sw ? '' : ' ro'}" ${act} aria-pressed="${on}"${off ? ' aria-disabled="true"' : ''}>`
       + `<span>${esc(name)}</span><span class="ws">${esc(txt)}</span></button>`;
   }
   // Writable control for the row, or null (read-only domain).
@@ -1308,7 +1333,7 @@ class IrryRowsCard extends IrryCard {
     if (dom === 'switch' || dom === 'input_boolean') {
       const p = this._pd && this._pd[row.entity], v = p ? { ...s, state: p.v } : s;
       return `${row.fmt ? `<span class="v">${esc(fmtState(row.fmt, v, this.ctx(), row))}</span>` : ''}`
-        + `<input class="tg" type="checkbox" data-i="${i}"${v.state === 'on' ? ' checked' : ''}${dis || (this.inert(row, v) ? ' disabled' : '')}>`;
+        + `<input class="tg" type="checkbox" data-i="${i}"${v.state === 'on' ? ' checked' : ''}${dis || (this.inert(row, v) ? ' aria-disabled="true"' : '')}>`;
     }
     if (dom === 'select') {
       const tx = (x) => (OPT[row.fmt] && OPT[row.fmt][x] ? t(OPT[row.fmt][x]) : x);
@@ -1327,7 +1352,7 @@ class IrryRowsCard extends IrryCard {
       return `<label><input type="number" step="${whole ? 1 : 'any'}" data-i="${i}" value="${esc(show)}"${dis}> ${esc(x ? x[1] : u || '')}</label>`;
     }
     if (dom === 'button') {
-      return `<button data-i="${i}"${dis || (this.inert(row, s) ? ' disabled' : '')}>${esc(name)}</button>`;
+      return `<button data-i="${i}"${dis || (this.inert(row, s) ? ' aria-disabled="true"' : '')}>${esc(name)}</button>`;
     }
     if (dom === 'time') return `<input type="time" data-i="${i}" value="${esc(/^\d\d:\d\d/.test(s.state) ? s.state.slice(0, 5) : '')}"${dis}>`;
     return null;
@@ -1335,9 +1360,10 @@ class IrryRowsCard extends IrryCard {
   async write(row, el) {
     // The reason is shown in the card: HA's own toast (notifyOnError, 5th argument) stays off.
     const h = this._h, call = (d, sv, data, tg) => h.callService(d, sv, data, tg, false), s = h.states[row.entity], dom = row.entity.split('.')[0], target = { entity_id: row.entity };
-    // An inert control does nothing (the disabled element already takes no input).
-    if (s && this.inert(row, s)) { el.blur(); return; }
-    this._err = ''; this._ok = '';
+    // An inert control sends nothing: its reason in the message line.
+    const why = s && this.inert(row, s);
+    if (why) { el.blur(); this.deny(row, why); return; }
+    this._err = ''; this._ok = ''; this._why = '';
     try {
       // Zone N Manual: the zone action (firmware 2.6.1) answers why an opening is refused; the switch does not.
       const za = row.zone && this._m && this._m.action('zone');

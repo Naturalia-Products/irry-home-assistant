@@ -12,7 +12,7 @@ const path = require('path');
 const { fakeHass } = require('./fake.cjs');
 const lib = require(path.join(__dirname, '..', 'dist', 'irry-the-seven.js'));
 let fail = 0, n = 0;
-const ok = (c, msg) => { n++; if (!c) { fail++; console.log('FAIL', msg); } };
+const ok = (c, msg) => { n++; if (!c) { fail++; console.log('FAIL', msg); } return c; };
 
 // Every entity / entity_id value in the generated config must exist in hass.
 function refs(o, out = []) {
@@ -833,7 +833,7 @@ function refs(o, out = []) {
     (function walk(o) { if (o && typeof o === 'object') { if (o.type === 'custom:irry-rows-card') sall.push(o); Object.values(o).forEach(walk); } })(JSON.parse(JSON.stringify(stv)));
     ok(!cardOf(cards, 'find_device') && sall.filter((c) => cardOf([c], 'find_device')).length === 1 && cardOf(sall, 'find_device').rows.some((r) => /time_source$/.test(r.entity || '')), 'find: only in Diagnostics');
     const fdc = cardOf(sall, 'find_device'), fd = mk(lib.IrryRowsCard, fdc, h0); fd.card._hms = 60;
-    ok(/class="w"/.test(ctl(fd, fdc, 'find_device')) && !/disabled/.test(ctl(fd, fdc, 'find_device')), 'find: full width, active');
+    ok(/class="w on"/.test(ctl(fd, fdc, "find_device")) && !/disabled/.test(ctl(fd, fdc, "find_device")), "find: full width, active (filled)");
     await fd.card.write(fdc.rows.find((r) => /find_device$/.test(r.entity)), EL);
     ok(fd.html().includes(t('find_ok')) && /data-k="ok"/.test(fd.html()) && /disabled/.test(ctl(fd, fdc, 'find_device')), 'find: answer, inert while running');
     await new Promise((r) => setTimeout(r, 120));
@@ -872,6 +872,104 @@ function refs(o, out = []) {
     // Find Device: same answer, no static note.
     const dc = cardOf(all, 'find_device');
     ok(dc.rows.find((r) => /find_device$/.test(r.entity)).hold === 10e3 && !all.some((c) => c.rows.some((r) => r.note === t('find_ok'))), 'settings: Find Device with answer, no note');
+  }
+  // ---- 0.4.6: every control of the rows cards, state by state: style, command sent or not, message, history
+  {
+    global.window.confirm = () => true;
+    const nm = (hh, name) => Object.keys(hh.entities).find((i) => hh.entities[i].name === name);
+    const put = (hh, name, v) => { const id = nm(hh, name); return { ...hh, states: { ...hh.states, [id]: { ...hh.states[id], state: v } }, calls: hh.calls }; };
+    const puts = (hh, kv) => kv.reduce((a, [k, v]) => put(a, k, v), hh);
+    const walk = (o, out = []) => { if (o && typeof o === 'object') { if (o.type === 'custom:irry-rows-card') out.push(o); Object.values(o).forEach((x) => walk(x, out)); } return out; };
+    const cardsOf = async (v, hh) => walk(JSON.parse(JSON.stringify(await reg[`ll-strategy-view-irry-${v}`].generate({}, hh))));
+    const later = new Date(Date.now() + 3600e3).toISOString(), soon = new Date(Date.now() + 300e3).toISOString();
+    const base = [['Firmware Update Mode', 'Notify'], ['Next Irrigation', later], ['Wind Pause', 'off'], ['Zone Active', '-'], ['Time Valid', 'off'], ['Alarm Sound', 'On'], ['Aux Mode', 'On']];
+    const z3 = [['Zone 1 Manual', 'on'], ['Zone 2 Manual', 'on'], ['Zone 3 Manual', 'on'], ['Zone Active', 'Zona 1']];
+    // [view, entity suffix, label, states, expected]: on/off = active (filled / grey), inert = outlined with the reason
+    // (why) on a tap and no command; ro = read-only, tap = history.
+    const C = [
+      ['status', 'valve_power', 'valve power off', [['Valve Power', 'off']], { ro: true, on: false }],
+      ['status', 'valve_power', 'valve power on', [['Valve Power', 'on']], { ro: true, on: true }],
+      ['status', '_aux', 'aux off', [['Aux', 'off']], { on: false }],
+      ['status', '_aux', 'aux on', [['Aux', 'on']], { on: true }],
+      ['status', '_aux', 'aux Sync', [['Aux Mode', 'Sync']], { why: t('x_why_sync') }],
+      ['status', '_aux', 'aux Sync on', [['Aux Mode', 'Sync'], ['Aux', 'on']], { why: t('x_why_sync'), on: true }],
+      ['status', '_aux', 'aux installing', [['Firmware Update Status', 'installing']], { why: t('x_why_fw') }],
+      ['status', 'programs_paused', 'pause off', [['Programs Paused', 'off']], { on: false }],
+      ['status', 'programs_paused', 'pause on', [['Programs Paused', 'on']], { on: true }],
+      ['status', 'silence_alarm', 'silence active', [], { on: true }],
+      ['status', 'silence_alarm', 'silence, time valid', [['Time Valid', 'on']], { why: t('x_why_noalarm') }],
+      ['status', 'silence_alarm', 'silence, buzzer off', [['Alarm Sound', 'Off']], { why: t('x_why_buzoff') }],
+      ['status', 'zone_1_manual', 'zone closed', [], { tg: true, on: false }],
+      ['status', 'zone_1_manual', 'zone open', [['Zone 1 Manual', 'on']], { tg: true, on: true }],
+      ['status', 'zone_4_manual', 'zone, 3 open', z3, { tg: true, why: t('e_open_limit') }],
+      ['status', 'zone_1_manual', 'zone open, 3 open (closing)', z3, { tg: true, on: true }],
+      ['status', 'zone_1_manual', 'zone, installing', [['Firmware Update Status', 'installing']], { tg: true, why: t('x_why_fw') }],
+      ['status', 'zone_1_manual', 'zone, verifying', [['Firmware Update Status', 'verifying']], { tg: true, why: t('x_why_fw') }],
+      ['status', 'close_all_zone_valves', 'close all, none open', [], { why: t('x_why_nozone') }],
+      ['status', 'close_all_zone_valves', 'close all, a zone open', [['Zone Active', 'Zona 1']], { on: true }],
+      ['status', 'ignore_wind', 'ignore wind, no pause', [], { why: t('x_why_nowind') }],
+      ['status', 'ignore_wind', 'ignore wind, waiting', [['Wind Pause', 'waiting']], { on: true, ok: t('wind_ignd') }],
+      ['status', 'ignore_wind', 'ignore wind, paused', [['Wind Pause', 'paused']], { on: true, ok: t('wind_ignd') }],
+      ['irrigation', 'zone_4_manual', 'irrigation zone, 3 open', z3, { tg: true, why: t('e_open_limit') }],
+      ['irrigation', 'zone_1_manual', 'irrigation zone closed', [], { tg: true, on: false }],
+      ['irrigation', 'zone_1_manual', 'irrigation zone, verifying', [['Firmware Update Status', 'verifying']], { tg: true, why: t('x_why_fw') }],
+      ['settings', 'firmware_check', 'fw check active', [], { sm: true }],
+      ['settings', 'firmware_check', 'fw check, updates off', [['Firmware Update Mode', 'Off']], { sm: true, why: t('x_why_fwoff') }],
+      ['settings', 'firmware_check', 'fw check, checking', [['Firmware Update Status', 'checking']], { sm: true, why: t('x_why_fwrun') }],
+      ['settings', 'firmware_install', 'fw install active', [], { sm: true }],
+      ['settings', 'firmware_install', 'fw install, manual', [['Firmware Update Status', '2.4.1 available (manual)']], { sm: true, why: t('x_why_manual') }],
+      ['settings', 'firmware_install', 'fw install, zone open', [['Zone Active', 'Zona 1']], { sm: true, why: t('e_fw_window') }],
+      ['settings', 'firmware_install', 'fw install, wind pause', [['Wind Pause', 'paused']], { sm: true, why: t('e_fw_window') }],
+      ['settings', 'firmware_install', 'fw install, start in 5 min', [['Next Irrigation', soon]], { sm: true, why: t('e_fw_window') }],
+      ['settings', 'restart', 'restart', [], { sm: true }],
+      ['settings', 'find_device', 'find active', [], { on: true, ok: t('find_ok') }],
+      ['settings', 'silence_alarm', 'settings silence, time valid', [['Time Valid', 'on']], { sm: true, why: t('x_why_noalarm') }],
+      ['settings', 'silence_alarm', 'settings silence active', [], { sm: true }],
+      ['settings', 'zone_1_sheltered_from_rain', 'shelter toggle', [], { tg: true, on: false }],
+    ];
+    for (const [v, k, lb, kv, x] of C) {
+      const hh = puts(puts(fakeHass(), base), kv), cfg = (await cardsOf(v, hh)).find((c) => c.rows.some((r) => (r.entity || '').endsWith(k)));
+      if (!ok(cfg, `${lb}: card found`)) continue;
+      const i = cfg.rows.findIndex((r) => (r.entity || '').endsWith(k)), row = cfg.rows[i], c = mk(lib.IrryRowsCard, cfg, hh);
+      c.card._ems = 40; c.card._hms = 40;
+      const tag = (c.html().match(new RegExp(`<(?:button|input)[^>]*data-(?:i|more)="${x.ro ? row.entity.replace(/\./g, '\\.') : i}"[^>]*>`)) || [''])[0];
+      const inert = /aria-disabled="true"/.test(tag);
+      // Style: inert = aria-disabled (outlined, readable), never the real disabled (no tap, no reason); a wide control
+      // is filled ("w on") while it can act or is on; a toggle shows its state.
+      ok(!!x.why === inert && !/ disabled/.test(tag) && tag, `${lb}: inert ${!!x.why}`);
+      if (row.wide) ok(/class="w( on)?( ro)?"/.test(tag) && /class="w on/.test(tag) === !!x.on, `${lb}: ${x.on ? 'filled' : 'grey / outlined'}`);
+      if (x.tg) ok(/class="tg"/.test(tag) && / checked/.test(tag) === !!x.on, `${lb}: toggle ${x.on ? 'on' : 'off'}`);
+      if (x.sm) ok(/^<button data-i=/.test(tag), `${lb}: small button`);
+      // History: read-only = tap (data-more), a wide switch = long press (data-lp), whatever its state.
+      if (x.ro) ok(/data-more=/.test(tag) && !/data-i=/.test(tag) && !/aria-disabled/.test(tag), `${lb}: tap = history, no command`);
+      if (row.wide && /^(switch|input_boolean)\./.test(row.entity)) ok(new RegExp(`data-lp="${row.entity}"`).test(tag), `${lb}: long press = history`);
+      if (x.ro) continue;
+      // Tap: inert = no command, the reason in the message line (warn) then gone; active = a command.
+      const n0 = hh.calls.length, sw = /^switch\./.test(row.entity), s0 = hh.states[row.entity].state;
+      await c.card.write(row, { blur() {}, classList: { add() {} }, checked: sw ? s0 !== 'on' : undefined, value: '' });
+      const msg = (c.html().match(/<div class="msg[^"]*" data-k="(\w*)"[^>]*>([^<]*)</) || []).slice(1);
+      if (x.why) {
+        ok(hh.calls.length === n0 && msg[0] === 'warn' && msg[1].includes(x.why), `${lb}: tap = reason, no command (${msg[1]})`);
+        if (row.wide && sw) ok(msg[1].includes(t('x_why_hist')), `${lb}: the reason says where the history is`);
+        await new Promise((r) => setTimeout(r, 90));
+        ok(!c.html().includes(x.why), `${lb}: reason gone after the timeout`);
+      } else {
+        ok(hh.calls.length === n0 + 1 && msg[0] !== 'warn', `${lb}: tap = command`);
+        if (x.ok) ok(msg[0] === 'ok' && msg[1] === x.ok, `${lb}: answer ${x.ok}`);
+      }
+    }
+    // Termina: same format as the next start, in Status and Irrigation (rows, no tile with a long date).
+    const he = put(fakeHass(), 'Zone 1 End', later);
+    for (const v of ['status', 'irrigation']) {
+      const cc = await cardsOf(v, he), cfg = cc.find((c) => c.rows.some((r) => /zone_1_end$/.test(r.entity || '')));
+      const r = cfg && cfg.rows.find((r) => /zone_1_end$/.test(r.entity || ''));
+      ok(r && r.fmt === 'ts' && cfg.rows.find((r) => /zone_1_next_start$/.test(r.entity || '')).fmt === 'ts', `${v}: end and next start in the same format`);
+      ok(!JSON.stringify(await reg[`ll-strategy-view-irry-${v}`].generate({}, he)).includes('"type":"tile","entity":"sensor.network_irry_the_seven_8dee48_zone_1_end"'), `${v}: end not a tile`);
+    }
+    // The theme: every "on" / active fill is the primary colour of Valve Power, no other blue.
+    const css = lib.IrryRowsCard && String(Object.getOwnPropertyDescriptor(lib.IrryRowsCard.prototype, 'paint').value);
+    ok(css && !require('fs').readFileSync(path.join(__dirname, '..', 'dist', 'irry-the-seven.js'), 'utf8').includes('--blue-color'), 'theme: no blue other than the primary colour');
+    ok(!/aria-disabled=true\]\{opacity/.test(require('fs').readFileSync(path.join(__dirname, '..', 'dist', 'irry-the-seven.js'), 'utf8')), 'theme: inert not by transparency');
   }
   console.log(`test.cjs: ${n} checks, ${fail} failed`);
   process.exit(fail ? 1 : 0);
