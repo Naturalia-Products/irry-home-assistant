@@ -12,7 +12,7 @@
 // Units: the device "Units" select (Auto = from the time zone), as in the device UI; HA sensor values
 // are converted from whatever unit HA shows them in. Graphs keep the HA unit.
 
-const IRRY_VERSION = '0.5.0';
+const IRRY_VERSION = '0.5.1';
 const I18N = /*I18N*/ {} /*END*/;
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -578,6 +578,8 @@ const CTLW = { ota_pv: K('e_ota_pv'), open_limit: K('e_open_limit'), aux_zone: K
   fw_mem: K('e_fw_mem'), ota_factory: K('e_ota_factory'), fw_none: K('e_fw_none'), fw_rejected: K('e_fw_rejected'),
   fw_force: K('e_fw_force'), fw_window: K('e_fw_window'), nodata: K('e_nodata') };
 const CTLN = { silence: K('x_why_noalarm'), closeall: K('x_why_nozone') };
+// Reasons shown as an error (red) rather than a warning: the zone limit asks the user to close a zone first.
+const CTLE = ['open_limit'];
 // Code of control c in the Blocked Controls text v, or '' (allowed).
 const ctlCode = (v, c) => ctlList(v)[c] || '';
 // Reason (truthy) why control c is inert with code, or '' (allowed, or find running).
@@ -618,8 +620,7 @@ function statusView(m, t) {
           { k: 'wind_resume', name: t('x_wind_res'), fmt: 'ts', dash: true },
           // Before firmware 2.6.0 (no Problems): the clock state.
           !has('problems') && { k: 'time_valid', name: t('x_tvalid'), fmt: 'yes' },
-          { k: 'firmware_update_status', name: t('fw'), fmt: 'fwst' },
-          has('wi_fi_network') ? { k: 'wi_fi_network', name: t('wifi'), fmt: 'wifi' } : { k: 'wi_fi_fallback_active', name: t('wfb_chip'), fmt: 'yes' },
+          // Firmware and Wi-Fi are in Diagnostics only; every row is always painted, so the card keeps its height.
         ]),
         // Full-width buttons, one per line, the state on the button (st: on / off text) and long press = history; a
         // tile cannot be inert. Aux and Silence Alarm (Waveshare only) inert as the firmware says.
@@ -1203,7 +1204,7 @@ class IrryRowsCard extends IrryCard {
     for (const r of this._c.rows || []) ids.push(r.entity, r.ref, r.only && r.only.entity, ...(r.refs || []), r.ctl && r.ctl.entity);
     // irr: the irrigation lines of the banner (minute: the wind resume countdown).
     if (this._c.irr) ids.push(...BANNER_KEYS.map(this._m.E), ...this._m.zones.map((n) => this._m.E(`zone_${n}_sheltered_from_rain`)));
-    return JSON.stringify([this._l, this._m.imp, this._m.zones.map(this._m.label), this._err || '', this._why || '', this._ok || '', pd,
+    return JSON.stringify([this._l, this._m.imp, this._m.zones.map(this._m.label), this._err || '', this._why || '', this._whyK || '', this._ok || '', pd,
       this._c.irr && this._m.st('wind_pause') === 'paused' ? Math.floor(Date.now() / 60000) : 0,
       ids.map((i) => { const s = i && h.states[i]; return s && [s.state, s.attributes.unit_of_measurement]; })]);
   }
@@ -1238,7 +1239,7 @@ class IrryRowsCard extends IrryCard {
     // A control running on the device (find:on): its answer while it runs.
     const run = (this._c.rows || []).find((x) => x.ok && x.ctl && ctlCode((h.states[x.ctl.entity] || {}).state, x.ctl.c) === 'on');
     const ok = this._ok || (run && run.ok);
-    const [mk, mt] = this._err ? ['err', this._err] : this._why ? ['warn', this._why] : ok ? ['ok', ok]
+    const [mk, mt] = this._err ? ['err', this._err] : this._why ? [this._whyK || 'warn', this._why] : ok ? ['ok', ok]
       : il.length ? [il.some(([y]) => y !== 'info') ? 'warn' : 'info', il.map(([, x]) => x).join(' · ')] : ['', ''];
     const msg = this._c.irr || (this._c.rows || []).some((x) => x.edit)
       ? `<div class="msg${this._c.msg_top ? ' top' : ''}" data-k="${mk}" role="status" title="${esc(mt)}">${esc(mt)}</div>` : '';
@@ -1287,6 +1288,7 @@ class IrryRowsCard extends IrryCard {
     // A full-width switch: its history is on the long press.
     const lp = row.wide && /^(switch|input_boolean)\./.test(row.entity) ? ` · ${this._t('x_why_hist')}` : '';
     const msg = this._why = `${row.name || row.entity}: ${why}${lp}`;
+    this._whyK = row.ctl && CTLE.includes(ctlCode((this._h.states[row.ctl.entity] || {}).state, row.ctl.c)) ? 'err' : 'warn';
     this._sig = ''; this.hass = this._h;
     setTimeout(() => { if (this._why === msg) { this._why = ''; this._sig = ''; if (this._h) this.hass = this._h; } }, this._ems || ERR_MS);
   }

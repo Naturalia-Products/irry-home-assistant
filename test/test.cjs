@@ -780,9 +780,19 @@ function refs(o, out = []) {
     const put = (hh, name, v) => { const id = nm(hh, name); return { ...hh, states: { ...hh.states, [id]: { ...hh.states[id], state: v } } }; };
     const h0 = fakeHass(), sv = await reg['ll-strategy-view-irry-status'].generate({}, h0), cards = sv.sections.flatMap((x) => x.cards);
     const rowsOf = (k) => cards.filter((c) => c.rows).flatMap((c) => c.rows).find((r) => new RegExp(`${k}$`).test(r.entity || ''));
-    // Every banner subject has a card row: health, firmware, Wi-Fi, station, battery, weather data.
-    ok(['problems', 'firmware_update_status', 'wi_fi_network', 'weather_feed', 'weather_battery', 'weather_data', 'zone_active', 'rain_skip_active', 'wind_pause']
+    // Every banner subject has a card row: health, station, battery, weather data; firmware and Wi-Fi in Diagnostics only.
+    ok(['problems', 'weather_feed', 'weather_battery', 'weather_data', 'zone_active', 'rain_skip_active', 'wind_pause']
       .every((k) => rowsOf(k)), 'status: banner subjects in the cards');
+    ok(!['firmware_update_status', 'wi_fi_network', 'wi_fi_fallback_active'].some((k) => rowsOf(k)), 'status: no Firmware or Wi-Fi rows (Diagnostics)');
+    {
+      const dg = JSON.stringify(await reg['ll-strategy-view-irry-settings'].generate({}, h0));
+      ok(['firmware_update_status', 'wi_fi_network'].every((k) => new RegExp(`"entity":"[a-z]+\\.[a-z0-9_]+_${k}"`).test(dg)), 'diagnostics: Firmware and Wi-Fi rows');
+      // Stato keeps its height: the same rows whatever the states.
+      const sc = cards.find((c) => c.rows && c.rows.some((r) => /zone_active$/.test(r.entity || ''))), cnt = (hh) => (mk(lib.IrryRowsCard, sc, hh).html().match(/<div class="r(?: [^"]*)?"/g) || []).length;
+      const c0 = cnt(h0);
+      ok(sc.rows.length === 5 && c0 === 5 && [['Wind Pause', 'paused'], ['Zone Active', 'Zona 1'], ['Problems', 'clock'], ['Next Irrigation', 'unknown'], ['Wind Resume', 'unknown'], ['Valve Power', 'unavailable']]
+        .every(([k, v]) => cnt(put(h0, k, v)) === c0), `status: Stato card keeps ${c0} rows in every state`);
+    }
     ok(!cards.some((c) => c.type === 'tile' && /close_all|ignore_wind/.test(c.entity)), 'status: Close all and Ignore Wind in Zones, not tiles');
     ok(cards.filter((c) => c.type === 'tile' && !c.hide_state).every((c) => c.tap_action && c.tap_action.action === 'more-info'), 'status: state tiles open the history');
     const zr = cards.find((c) => c.irr), z = mk(lib.IrryRowsCard, zr, h0);
@@ -969,7 +979,8 @@ function refs(o, out = []) {
       const msg = (c.html().match(/<div class="msg[^"]*" data-k="(\w*)"[^>]*>([^<]*)</) || []).slice(1);
       if (msg[1]) msg[1] = msg[1].replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
       if (x.why) {
-        ok(hh.calls.length === n0 && msg[0] === 'warn' && msg[1].includes(x.why), `${lb}: tap = reason, no command (${msg[1]})`);
+        // The zone limit is an error (red), the other reasons warnings.
+        ok(hh.calls.length === n0 && msg[0] === (x.why === t('e_open_limit') ? 'err' : 'warn') && msg[1].includes(x.why), `${lb}: tap = reason, no command (${msg[0]} ${msg[1]})`);
         if (row.wide && sw) ok(msg[1].includes(t('x_why_hist')), `${lb}: the reason says where the history is`);
         await new Promise((r) => setTimeout(r, 90));
         ok(!c.html().includes(x.why), `${lb}: reason gone after the timeout`);
