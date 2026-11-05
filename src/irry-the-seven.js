@@ -12,7 +12,7 @@
 // Units: the device "Units" select (Auto = from the time zone), as in the device UI; HA sensor values
 // are converted from whatever unit HA shows them in. Graphs keep the HA unit.
 
-const IRRY_VERSION = '0.3.8';
+const IRRY_VERSION = '0.3.9';
 const I18N = /*I18N*/ {} /*END*/;
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -48,7 +48,9 @@ function lang(hass, cfg) {
   const l = ((cfg && cfg.language) || (hass.locale && hass.locale.language) || hass.language || 'en').slice(0, 2);
   return I18N[l] ? l : 'en';
 }
-function tr(l) {
+const TR = {};
+function tr(l) { return TR[l] || (TR[l] = mkTr(l)); }
+function mkTr(l) {
   const L = I18N[l] || I18N.en;
   const pr = new Intl.PluralRules(l);
   // Same message format as the device UI: {name} and {count, plural, one {# zone} other {# zones}}.
@@ -84,18 +86,19 @@ function index(hass, dev) {
   if (per[dev.id]) return per[dev.id];
   const ents = Object.values(hass.entities || {}).filter((e) => e.device_id === dev.id);
   const byName = {};
-  for (const e of ents) if (e.name) byName[slug(e.name)] ??= e.entity_id;
+  for (const e of ents) if (e.name) (byName[slug(e.name)] ||= []).push(e.entity_id);
   const cache = {};
   // Entity renamed in HA: the entity_id keeps the original suffix; the shortest match wins
-  // ("irrigation_factor" also ends "zone_1_irrigation_factor").
+  // ("irrigation_factor" also ends "zone_1_irrigation_factor"). Two entities with the same name (one renamed
+  // like another): the one whose entity_id suffix is the key, else the suffix rule over all entities.
+  const bySuffix = (ids, k) => {
+    const c = ids.filter((i) => i.split('.')[1] === k || i.endsWith('_' + k)).sort((a, b) => a.length - b.length);
+    return c.length && (c.length === 1 || c[0].length < c[1].length) ? c[0] : null;
+  };
   const E = (k) => {
     if (k in cache) return cache[k];
-    let id = byName[k];
-    if (!id) {
-      const c = ents.map((e) => e.entity_id).filter((i) => i.split('.')[1] === k || i.endsWith('_' + k))
-        .sort((a, b) => a.length - b.length);
-      id = c.length && (c.length === 1 || c[0].length < c[1].length) ? c[0] : null;
-    }
+    const n = byName[k] || [];
+    const id = n.length === 1 ? n[0] : (n.length && bySuffix(n, k)) || bySuffix(ents.map((e) => e.entity_id), k);
     return (cache[k] = id || null);
   };
   return (per[dev.id] = { E });
@@ -106,7 +109,22 @@ const IMPZ = /^(America\/(New_York|Chicago|Denver|Los_Angeles|Phoenix|Anchorage|
 
 // Model of one device: entity lookup E(key), states, zones, labels, units, action names.
 // l: language of the texts (an unnamed zone is "Zone N" in it), default the HA user language.
+// One model per hass.states reference (HA replaces the object on every state change) and device / language.
+const MODEL = new WeakMap();
 function irryModel(hass, want, l) {
+  const st0 = hass.states || {};
+  let per = MODEL.get(st0);
+  if (!per) MODEL.set(st0, (per = new Map()));
+  const key = `${want || ''}|${l || ''}`, x = per.get(key);
+  if (x && x.e === hass.entities && x.d === hass.devices && x.s === hass.services && x.c === hass.config && x.lo === hass.locale) {
+    if (x.m) x.m.h = hass;
+    return x.m;
+  }
+  const m = mkModel(hass, want, l);
+  per.set(key, { m, e: hass.entities, d: hass.devices, s: hass.services, c: hass.config, lo: hass.locale });
+  return m;
+}
+function mkModel(hass, want, l) {
   const dev = pickDevice(hass, want);
   if (!dev) return null;
   const { E } = index(hass, dev);
@@ -119,16 +137,73 @@ function irryModel(hass, want, l) {
   for (let n = 1; n <= 8; n++) if (E(`zone_${n}_manual`) && (n !== 7 || z7)) zones.push(n);
   const zt = tr(l || lang(hass));
   const label = (n) => { const v = st(`zone_${n}_label`); return v && !BAD.includes(v) ? v : zt('x_zone_n', { n }); };
-  const un = st('units');
-  const imp = un === 'Imperial' || (un !== 'Metric' && IMPZ.test((hass.config && hass.config.time_zone) || ''));
-  const mac = ((dev.connections || []).find((c) => c[0] === 'mac') || [])[1];
-  const m6 = mac ? mac.replace(/:/g, '').slice(-6).toLowerCase() : '';
-  const action = (act) => {
-    const all = Object.keys((hass.services && hass.services.esphome) || {}).filter((s) => s.endsWith('_' + act));
-    const mine = m6 ? all.filter((s) => s.includes(m6)) : [];
-    return mine[0] || (all.length === 1 ? all[0] : null);
-  };
-  return { h: hass, dev, E, so, st, zones, label, imp, action, aux };
+  const un = st('units'), tz = devTz(hass, st);
+  const imp = un === 'Imperial' || (un !== 'Metric' && IMPZ.test(tz || ''));
+  const node = nodeOf(hass, dev), sv = (hass.services && hass.services.esphome) || {};
+  const action = (act) => (node && sv[`${node}_${act}`] ? `${node}_${act}` : null);
+  return { h: hass, dev, E, so, st, zones, label, imp, tz, node, action, aux };
+}
+
+// Device time zone: the "Time Zone" sensor when it is an IANA name (the firmware publishes a POSIX string when no
+// name is set, which Intl rejects), else the HA one; undefined = the browser zone.
+const TZOK = new Map();
+function tzValid(z) {
+  if (!z || typeof z !== 'string') return false;
+  if (!TZOK.has(z)) {
+    let ok = true;
+    try { new Intl.DateTimeFormat('en', { timeZone: z }); } catch (e) { ok = false; }
+    TZOK.set(z, ok);
+  }
+  return TZOK.get(z);
+}
+function devTz(hass, st) {
+  const z = st && st('time_zone'), hz = hass && hass.config && hass.config.time_zone;
+  return tzValid(z) ? z : tzValid(hz) ? hz : undefined;
+}
+// Time zone of a model, or of HA for a bare hass.
+const tzOf = (x) => (x && x.dev ? x.tz : devTz(x));
+
+// ESPHome names a device action "<node name, - as _>_<action>" (build_service_name of the HA esphome integration),
+// while the HA device keeps the friendly name. The node of each Irry device (a prefix with the rapid and set_slot
+// actions) is found by, in order: the host of its web UI in configuration_url ("http://it7ws-8dee48.local"), its
+// registry name when it is a node name, the MAC suffix of the default node name, and last by exclusion (one device
+// and one node left). Still ambiguous: no action, never the action of another device.
+const NODES = new WeakMap();
+function nodeOf(hass, dev) {
+  const sv = (hass.services && hass.services.esphome) || {}, dv = hass.devices || {};
+  let per = NODES.get(sv);
+  if (!per) NODES.set(sv, (per = new WeakMap()));
+  let map = per.get(dv);
+  if (!map) per.set(dv, (map = assignNodes(hass)));
+  return map[dev.id] || null;
+}
+function assignNodes(hass) {
+  const sv = Object.keys((hass.services && hass.services.esphome) || {}), has = new Set(sv);
+  const free = new Set(sv.filter((s) => s.endsWith('_rapid')).map((s) => s.slice(0, -6)).filter((p) => has.has(`${p}_set_slot`)));
+  const asNode = (s) => (/^[a-z0-9][a-z0-9-]*$/.test(s || '') && !/^\d+(-\d+)*$/.test(s) ? s.replace(/-/g, '_') : null);
+  const rules = [
+    (d) => { try { return asNode(new URL(d.configuration_url).hostname.replace(/\.local\.?$/, '')); } catch (e) { return null; } },
+    (d) => asNode(d.name),
+    (d) => {
+      const mac = ((d.connections || []).find((c) => c[0] === 'mac') || [])[1];
+      const m6 = mac ? mac.replace(/:/g, '').slice(-6).toLowerCase() : '';
+      const c = m6 ? [...free].filter((p) => p.endsWith('_' + m6) || p.endsWith(m6)) : [];
+      return c.length === 1 ? c[0] : null;
+    },
+  ];
+  const out = {};
+  let left = irryDevices(hass);
+  for (const rule of rules) {
+    left = left.filter((d) => {
+      const p = rule(d);
+      if (!p || !free.has(p)) return true;
+      out[d.id] = p;
+      free.delete(p);
+      return false;
+    });
+  }
+  if (left.length === 1 && free.size === 1) out[left[0].id] = [...free][0];
+  return out;
 }
 
 // ---------------------------------------------------------------- values in the device words and units
@@ -151,7 +226,20 @@ const DEV = {
   t: [['°C', 1], ['°F', 1]], w: [['km/h', 1], ['mph', 1]], p: [['hPa', 1], ['inHg', 2]],
   r: [['mm', 1], ['in', 2]], rr: [['mm/h', 1], ['in/h', 2]], h: [['m', 0], ['ft', 0]], k: [['km', 0], ['mi', 0]],
 };
-const nf = (v, d, l) => new Intl.NumberFormat(l, { minimumFractionDigits: d, maximumFractionDigits: d }).format(v);
+// Intl formatters are costly to build and asked for on every repaint: one per language and options.
+const FMT = new Map();
+function dtf(l, o) {
+  const k = `${l}|${JSON.stringify(o)}`;
+  let f = FMT.get(k);
+  if (!f) FMT.set(k, (f = new Intl.DateTimeFormat(l, o)));
+  return f;
+}
+const nf = (v, d, l) => {
+  const k = `n|${l}|${d}`;
+  let f = FMT.get(k);
+  if (!f) FMT.set(k, (f = new Intl.NumberFormat(l, { minimumFractionDigits: d, maximumFractionDigits: d })));
+  return f.format(v);
+};
 // Value in the device unit: [value, unit, decimals], or null when the unit is not one of ours.
 function devValue(v, unit, imp) {
   const x = UNIT[unit];
@@ -165,18 +253,18 @@ function toUnit(v, from, to) { return UNIT[to][2](UNIT[from][1](v)); }
 function fmtTime(iso, c) {
   const d = new Date(iso);
   if (isNaN(d)) return '-';
-  const tz = c.h.config && c.h.config.time_zone;
+  const tz = c.m ? c.m.tz : devTz(c.h);
   const z = tz ? { timeZone: tz } : {};
   const o = { hour: '2-digit', minute: '2-digit', ...z };
-  const day = (x) => new Intl.DateTimeFormat('en-CA', z).format(x);
+  const day = (x) => dtf('en-CA', z).format(x);
   if (day(d) !== day(new Date())) Object.assign(o, { weekday: 'short', day: 'numeric', month: 'short' });
-  return new Intl.DateTimeFormat(c.l, o).format(d);
+  return dtf(c.l, o).format(d);
 }
 function dayNames(l, w = 'short') {
-  const f = new Intl.DateTimeFormat(l, { weekday: w });
+  const f = dtf(l, { weekday: w });
   return DAYS.map((d, i) => f.format(new Date(2026, 10, 2 + i)));  // 2026-11-02 is a Monday
 }
-const dateText = (l, y, mo, d) => new Intl.DateTimeFormat(l, { weekday: 'short', day: 'numeric', month: 'short' }).format(new Date(+y, mo - 1, +d));
+const dateText = (l, y, mo, d) => dtf(l, { weekday: 'short', day: 'numeric', month: 'short' }).format(new Date(+y, mo - 1, +d));
 // Same helpers as the device UI: minutes -> HH:MM, a duration in minutes, an age in seconds.
 const hm = (x) => { x = ((x % 1440) + 1440) % 1440; return `${String(Math.floor(x / 60)).padStart(2, '0')}:${String(x % 60).padStart(2, '0')}`; };
 const fmin = (t, x) => (x < 60 ? `${x} ${t('min')}` : `${Math.floor(x / 60)} ${t('h')}${x % 60 ? ` ${x % 60} ${t('min')}` : ''}`);
@@ -204,11 +292,10 @@ function devSlots(m) {
       dm: Math.max(0, MODES.indexOf(v.mode)), n: Math.max(1, v.every_n), a: v.from ? dnOf(v.from) : 0 };
   }) }));
 }
-// Today in the HA time zone (the device uses its own clock, set to the same zone): { dn, m (minute of the day) }.
-function devToday(h, now = new Date()) {
+// Today on the device clock: { dn, m (minute of the day) }. x: a model (its time zone, see devTz) or hass (HA zone).
+function devToday(x, now = new Date()) {
   const o = { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' };
-  let f;
-  try { f = new Intl.DateTimeFormat('en-CA', { ...o, timeZone: h.config && h.config.time_zone }); } catch (e) { f = new Intl.DateTimeFormat('en-CA', o); }
+  const tz = tzOf(x), f = dtf('en-CA', tz ? { ...o, timeZone: tz } : o);
   const p = {};
   f.formatToParts(now).forEach((x) => { p[x.type] = x.value; });
   return { dn: Date.UTC(+p.year, +p.month - 1, +p.day) / 864e5, m: (+p.hour % 24) * 60 + +p.minute };
@@ -318,7 +405,8 @@ async function irryGet(h, m, what, arg) {
 function errText(m, t, l, e) {
   const msg = String((e && (e.message || e.error)) || e);
   const g = msg.match(/limit (\w{3})(?: (\d{4})-(\d\d)-(\d\d))? (\d\d:\d\d)-(\d\d:\d\d) ([\d,]+)/);
-  if (!g) return msg === 'limit' ? t('e_limit') : t('e_generic', { err: msg });
+  // HA wraps the device error_message: "Failed to execute the action call <name> on <device>: <message>".
+  if (!g) return /(^|\W)limit$/.test(msg) ? t('e_limit') : t('e_generic', { err: msg });
   const when = g[2] ? dateText(l, g[2], g[3], g[4]) : dayNames(l)[DAYS.indexOf(g[1])];
   const zs = g[7].split(',').filter((z) => m.zones.includes(+z));
   return t('e_limit_at', { count: zs.length, when, from: g[5], to: g[6], zones: zs.map((z) => m.label(+z)).join(', ') });
@@ -792,8 +880,10 @@ function settingsView(m, t) {
     ['system', t('s'), [S.sys, S.diag, S.buz]]]);
 }
 
-// HACS cards load in parallel with this file: wait (max 5 s) for the ones listed as dashboard resources, so the
-// weather view does not drop them when this strategy registers first.
+// HACS cards load in parallel with this file: wait (max HACS_WAIT ms) for the ones listed as dashboard resources, so
+// the weather view does not drop them when this strategy registers first. One defined later regenerates the
+// dashboard through shouldRegenerate (regenKey has the defined HACS cards).
+const HACS_WAIT = 1500;
 const HACS = ['windrose-card', 'mini-graph-card'];
 async function hacsReady(hass) {
   if (typeof customElements === 'undefined' || HACS.every((n) => customElements.get(n))) return;
@@ -802,7 +892,7 @@ async function hacsReady(hass) {
   if (!Array.isArray(res)) return;
   const want = HACS.filter((n) => !customElements.get(n) && res.some((r) => String(r.url || '').includes(n)));
   if (!want.length) return;
-  await Promise.race([Promise.all(want.map((n) => customElements.whenDefined(n))), new Promise((ok) => setTimeout(ok, 5000))]);
+  await Promise.race([Promise.all(want.map((n) => customElements.whenDefined(n))), new Promise((ok) => setTimeout(ok, HACS_WAIT))]);
 }
 
 const VIEWS = { status: statusView, irrigation: irrigationView, day: dayView, weather: weatherView, settings: settingsView };
@@ -848,7 +938,8 @@ function regenKey(hass, config) {
     const m = irryModel(hass, want || undefined, 'en');
     c.set(want, JSON.stringify(m ? [[1, 2, 3, 4, 5, 6, 7, 8].map((n) => m.st(`zone_${n}_label`) ?? null),
       m.st('r8_mode') ?? null, m.st('aux_label') ?? null, m.st('units') ?? null,
-      Object.keys((hass.services && hass.services.esphome) || {}).sort()] : null));
+      Object.keys((hass.services && hass.services.esphome) || {}).sort(),
+      typeof customElements === 'undefined' ? [] : HACS.filter((n) => customElements.get(n))] : null));
   }
   return c.get(want);
 }
@@ -910,13 +1001,22 @@ class IrryCard extends HTMLElement {
     this._t = tr(this._l);
     if (!this.shadowRoot) this.attachShadow({ mode: 'open' });
     if (this.busy()) return;  // keep what the user is editing
+    // Same states, registries, language and theme as the last signature: nothing to do. A change of the card's own
+    // state clears _sig (or _seen, for the minute tick) to be looked at again.
+    const seen = [h.states, h.entities, h.devices, h.services, h.config, h.locale, h.themes, this._l];
+    if (this._sig && this._seen && seen.every((x, i) => x === this._seen[i])) return;
+    this._seen = seen;
     const sig = this.signature();
     if (sig === this._sig) return;
     this._sig = sig;
     this.load();
     this.paint();
   }
-  busy() { const a = this.shadowRoot.activeElement; return !!(a && /^(INPUT|SELECT)$/.test(a.tagName) && a.type !== 'checkbox'); }
+  // Editing: focus in a text field, a select or the HA entity picker (ha-selector).
+  busy() {
+    const a = this.shadowRoot.activeElement;
+    return !!(a && /^(INPUT|SELECT|TEXTAREA|HA-SELECTOR)$/.test(a.tagName) && a.type !== 'checkbox');
+  }
   load() {}
   ctx() { return { h: this._h, m: this._m, t: this._t, l: this._l }; }
   noDev() { this.shadowRoot.innerHTML = `<ha-card><div class="wrap">${esc(this._t('x_no_dev'))}</div></ha-card>`; }
@@ -978,7 +1078,7 @@ function alerts(m, c) {
   return A.length ? A : [['success', t('allok')]];
 }
 class IrryBannerCard extends IrryCard {
-  connectedCallback() { this._tick = setInterval(() => { if (this._h) this.hass = this._h; }, 60e3); }
+  connectedCallback() { this._tick = setInterval(() => { if (this._h) { this._seen = null; this.hass = this._h; } }, 60e3); }
   disconnectedCallback() { clearInterval(this._tick); }
   signature() {
     const m = this._m;
@@ -1031,7 +1131,8 @@ class IrryRowsCard extends IrryCard {
         ? `<div class="r"><span class="n">${dom === 'button' ? '' : esc(name)}</span>${ctl}</div>`
         : `<div class="r tap" data-more="${esc(row.entity)}"><span class="n">${esc(name)}</span><span class="v">${esc(fmtState(row.fmt, s, c, row))}</span></div>`);
     });
-    r.innerHTML = `<style>${CSS}</style><ha-card>${this._c.title ? `<h1 class="card-header">${esc(this._c.title)}</h1>` : ''}<div class="rows">${html.join('')}</div></ha-card>`;
+    const err = this._err ? `<ha-alert alert-type="error">${esc(this._err)}</ha-alert>` : '';
+    r.innerHTML = `<style>${CSS}</style><ha-card>${this._c.title ? `<h1 class="card-header">${esc(this._c.title)}</h1>` : ''}<div class="rows">${err}${html.join('')}</div></ha-card>`;
     r.querySelectorAll('[data-more]').forEach((el) => el.addEventListener('click', () => this.more(el.dataset.more)));
     r.querySelectorAll('[data-i]').forEach((el) => {
       const row = this._c.rows[+el.dataset.i];
@@ -1075,6 +1176,7 @@ class IrryRowsCard extends IrryCard {
   }
   async write(row, el) {
     const h = this._h, s = h.states[row.entity], dom = row.entity.split('.')[0], target = { entity_id: row.entity };
+    this._err = '';
     try {
       if (dom === 'switch' || dom === 'input_boolean') await h.callService(dom, el.checked ? 'turn_on' : 'turn_off', {}, target);
       else if (dom === 'select') await h.callService('select', 'select_option', { option: el.value }, target);
@@ -1097,7 +1199,8 @@ class IrryRowsCard extends IrryCard {
         await h.callService('number', 'set_value', { value: +v.toFixed(6) }, target);
       }
     } catch (e) {
-      // Refused or invalid: show the device value again.
+      // Refused or invalid: the reason above the rows, and the device value again.
+      this._err = `${row.name || row.entity}: ${errText(this._m, this._t, this._l, e)}`;
     }
     el.blur();
     this._sig = '';
@@ -1265,15 +1368,21 @@ class IrrySlotCard extends IrryEditCard {
 // Rapid: one slot, same start and duration, zones one after another (esphome.<node>_rapid).
 class IrryRapidCard extends IrryEditCard {
   setConfig(c) { super.setConfig(c); this._slot = 1; this._edit = false; }
-  busy() { return this._edit || super.busy(); }
   signature() {
     const m = this._m;
     return m ? JSON.stringify([this._l, this._slot, m.zones.map((n) => [m.label(n), slotFrom(m, n, this._slot)])]) : 'none';
   }
   // From the slot as it is now: the enabled zones by start time, the first one's start / duration / days.
+  // With a draft (_edit) only the zone list follows the device (a zone gone or added: R8 Mode); labels, the
+  // unavailable state and the rest repaint from the new states without losing what the user set.
   load() {
     const m = this._m;
     if (!m) return;
+    if (this._edit && this._v) {
+      this._order = [...this._order.filter((n) => m.zones.includes(n)), ...m.zones.filter((n) => !this._order.includes(n))];
+      this._inc = new Set([...this._inc].filter((n) => m.zones.includes(n)));
+      return;
+    }
     const zs = m.zones.map((n) => ({ n, v: slotFrom(m, n, this._slot) }));
     const on = zs.filter((z) => z.v.enabled && z.v.duration > 0).sort((a, b) => a.v.start.localeCompare(b.v.start));
     const f = (on[0] || zs[0]).v;
@@ -1338,19 +1447,21 @@ class IrryRapidCard extends IrryEditCard {
 
 // ---------------------------------------------------------------- cards that read the "get" action
 // Cache per card: { j, at, busy }; a reply repaints the card. Errors keep the last reply.
+const GET_RETRY = 60e3;
 class IrryGetCard extends IrryCard {
   setConfig(c) { super.setConfig(c); this._d = {}; this._ver = 0; }
-  connectedCallback() { this._tick = setInterval(() => { if (this._h) this.hass = this._h; }, 60e3); }
+  // Every minute: the day may have changed (signature), and errors are retried.
+  connectedCallback() { this._tick = setInterval(() => { if (this._h) { this._seen = null; this.hass = this._h; } }, 60e3); }
   disconnectedCallback() { clearInterval(this._tick); }
   // Reply of get what/arg, fetched when older than maxAge ms (Infinity: once); undefined while loading.
   got(what, arg, maxAge) {
     const key = `${what}/${arg}`, c = this._d[key];
     if (!this._m || !this._m.action('get')) return undefined;
-    if (c && (c.busy || Date.now() - c.at < maxAge)) return c.j;
+    if (c && (c.busy || Date.now() - c.at < (c.err ? Math.min(maxAge, GET_RETRY) : maxAge))) return c.j;
     this._d[key] = { j: c && c.j, at: c ? c.at : 0, busy: 1 };
     irryGet(this._h, this._m, what, arg)
       .then((j) => { this._d[key] = { j, at: Date.now() }; })
-      .catch(() => { this._d[key] = { j: c && c.j, at: Date.now() }; })
+      .catch(() => { this._d[key] = { j: c && c.j, at: Date.now(), err: 1 }; })
       .finally(() => { this._ver++; this._sig = ''; if (this._h) this.hass = this._h; });
     return this._d[key].j;
   }
@@ -1424,14 +1535,14 @@ class IrryDayCard extends IrryGetCard {
   signature() {
     const m = this._m;
     if (!m) return 'none';
-    const td = devToday(this._h);
+    const td = devToday(this._m);
     return JSON.stringify([this._l, this._g, this._full, td, this._ver, this.dark(), m.zones.map(m.label), devSlots(m), !!m.action('get'),
       m.zones.map((n) => zoneFactor(m, n))]);
   }
   paint() {
     const m = this._m, t = this._t, l = this._l, r = this.shadowRoot;
     if (!m) return this.noDev();
-    const g = this._g, td = devToday(this._h), Z = devSlots(m), svc = !!m.action('get');
+    const g = this._g, td = devToday(this._m), Z = devSlots(m), svc = !!m.action('get');
     const jr = g <= 0 ? this.hist(td.dn + g, td) : null, jy = g <= 0 ? this.hist(td.dn + g - 1, td) : null;
     const D = dayModel(Z, g, td, jr && jr.r, jy && jy.r, m.zones.map((n) => zoneFactor(m, n))), dn = D.dn, nm = D.nm, HO = this._ho, zn = m.zones.map(m.label);
     const all = D.rows.flatMap((x) => x.bars).filter((b) => b.b > b.a), [lo, hi] = dayRange(all, this._full);
@@ -1524,7 +1635,7 @@ class IrryDayCard extends IrryGetCard {
 // always in Italian, zone by number) make one row per irrigation; the history rows of the day (get hist) add the slot
 // and the outcome, and the irrigations with no event (skipped by rain or wind). Consecutive slot writes make one row.
 // ev = [{ s, at }] oldest first, H = { dn: history rows }; returns [{ k, dn, tm, txt }] newest first.
-function evModel(m, t, l, h, ev, H = {}, td = devToday(h)) {
+function evModel(m, t, l, h, ev, H = {}, td = devToday(m)) {
   const zl = (n) => { const v = m.st(`zone_${n}_label`); return v && !BAD.includes(v) ? v : t('x_zone_n', { n }); };
   const zoneOf = (nm) => {
     const g = nm.match(/^(?:Zone|Zona) (\d)$/);
@@ -1532,7 +1643,7 @@ function evModel(m, t, l, h, ev, H = {}, td = devToday(h)) {
     const x = m.zones.find((n) => m.st(`zone_${n}_label`) === nm);
     return x || 0;
   };
-  const key = (at) => { const d = devToday(h, at); return d.dn * 1440 + d.m; };
+  const key = (at) => { const d = devToday(m, at); return d.dn * 1440 + d.m; };
   const out = [], open = {};
   let set = null, g;
   ev.forEach((x) => {
@@ -1586,7 +1697,7 @@ class IrryEventsCard extends IrryGetCard {
   signature() {
     const m = this._m, s = m && m.so('last_event');
     if (!s) return 'none';
-    return JSON.stringify([this._l, s.state, s.last_changed, this._at, this._ver, this._all, devToday(this._h).dn,
+    return JSON.stringify([this._l, s.state, s.last_changed, this._at, this._ver, this._all, devToday(this._m).dn,
       m.zones.map((n) => m.st(`zone_${n}_label`))]);
   }
   load() {
@@ -1619,7 +1730,7 @@ class IrryEventsCard extends IrryGetCard {
     let ev = this._ev || [];
     const at = s && new Date(s.last_changed || s.last_updated || Date.now());
     if (!this._ev && s && !BAD.includes(s.state) && !isNaN(at)) ev = [...ev, { s: s.state, at }];  // the history is not there yet
-    const td = devToday(this._h), L = evModel(m, t, this._l, this._h, ev, this.hists(td), td), dy = dayNames(this._l);
+    const td = devToday(this._m), L = evModel(m, t, this._l, this._h, ev, this.hists(td), td), dy = dayNames(this._l);
     const all = this._all && L.length > 5;
     const rows = (all ? L : L.slice(0, 5)).map((x) => `<div class="r"><span class="tm">${x.dn !== td.dn ? `${esc(dy[(x.dn + 3) % 7])} ` : ''}`
       + `${esc(x.tm)}</span><span class="ev">${esc(x.txt)}</span></div>`).join('');
@@ -1924,7 +2035,9 @@ const TABCSS = `
   @container (min-width:1100px){.grid.lead{grid-template-columns:repeat(4,minmax(0,1fr))}
     .grid.lead>.sec:first-child{grid-column:1;grid-row:1/span var(--rows,1)}}`;
 class IrryTabsCard extends HTMLElement {
-  setConfig(c) { this._c = c || {}; this._el = {}; this._tab = null; this._r = 0; }
+  // hui-card calls setConfig again on the same element when the config changes and the type does not: the old
+  // tabs are dropped and the remembered one is shown from the new config.
+  setConfig(c) { this._c = c || {}; this._el = {}; this._tab = null; this._r = (this._r || 0) + 1; if (this.shadowRoot) this.show(this.saved()); }
   getCardSize() { return 12; }
   getGridOptions() { return { columns: 'full' }; }
   key() { return `irry.tab.${this._c.view || ''}`; }

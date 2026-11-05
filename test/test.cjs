@@ -124,7 +124,7 @@ function refs(o, out = []) {
   ok(lib.fmtState('next', S('Next Irrigation'), c, { ref: pz.entity_id }) === t('paused'), 'next when paused');
   ok(lib.ovlText(ms, t, 'it', '2 zones tue 2026-11-03 06:11-06:20 1,2').includes('Prato'), 'overlap text');
   ok(lib.eventText(ms, t, 'it', 'Set slot Z1 S2 refused: limit').includes('Prato'), 'set slot refused');
-  S('Units').state = 'Imperial';
+  { const u = S('Units').entity_id; hs.states = { ...hs.states, [u]: { ...hs.states[u], state: 'Imperial' } }; }  // HA replaces states
   const mi = lib.irryModel(hs), ci = { ...c, m: mi };
   ok(mi.imp && lib.fmtState('', S('Weather Temperature'), ci) === '65,1 °F' && lib.fmtState('', S('Weather Pressure'), ci) === '29,92 inHg', 'imperial');
   ok(Math.abs(lib.toUnit(11.2, 'mph', 'm/s') - 5.007) < 0.01, 'back to the entity unit');
@@ -279,7 +279,7 @@ function refs(o, out = []) {
   const tick = () => new Promise((r) => setImmediate(r));
   const sset = (hh, name, state, attributes) => {
     const id = Object.keys(hh.entities).find((i) => hh.entities[i].name === name);
-    hh.states[id] = { entity_id: id, state, attributes: attributes || hh.states[id].attributes };
+    hh.states = { ...hh.states, [id]: { entity_id: id, state, attributes: attributes || hh.states[id].attributes } };  // as HA: a new object
   };
   // hacsReady: resources unreadable or with no HACS card listed: no wait.
   {
@@ -491,6 +491,109 @@ function refs(o, out = []) {
     ok(SR({ device: 'nope' }, h0, z(cp(h0), 'Zone 2 Label', 'Orto')) === false, 'shouldRegenerate: other device');
     ok(['IrryDashboardStrategy', 'IrryStatusStrategy', 'IrryIrrigationStrategy', 'IrryDayStrategy', 'IrryWeatherStrategy', 'IrrySettingsStrategy'].every((c) => lib[c] && lib[c].shouldRegenerate === SR),
       'shouldRegenerate on the strategies');
+  }
+
+  // ---- 0.3.9: code review 2.5.1
+  {
+    const nm = (hh, name) => Object.keys(hh.entities).find((i) => hh.entities[i].name === name);
+    const put = (hh, name, v) => { const id = nm(hh, name); hh.states = { ...hh.states, [id]: { ...hh.states[id], state: v } }; return hh; };
+    const fe = (value, x = {}) => ({ value, blur() {}, classList: { add() {} }, ...x });
+    // M-F2: "today" and times on the device clock (Time Zone sensor), HA zone when it is a POSIX string.
+    const hz = put(fakeHass(), 'Time Zone', 'America/New_York'), mz = lib.irryModel(hz), at3 = new Date('2026-11-05T03:30:00Z');
+    const dz = lib.devToday(mz, at3), dh = lib.devToday(hz, at3);
+    ok(mz.tz === 'America/New_York' && dz.dn === lib.dnOf('2026-11-04') && dz.m === 22 * 60 + 30, `device today in its zone ${JSON.stringify(dz)}`);
+    ok(dh.dn === lib.dnOf('2026-11-05') && dh.m === 4 * 60 + 30, `bare hass: HA zone ${JSON.stringify(dh)}`);
+    ok(lib.fmtTime(at3.toISOString(), { h: hz, m: mz, t, l: 'it' }).includes('22:30'), 'fmtTime in the device zone');
+    ok(lib.irryModel(put(fakeHass(), 'Time Zone', 'CET-1CEST,M3.5.0,M10.5.0/3')).tz === 'Europe/Rome', 'POSIX time zone: HA zone');
+    ok(lib.irryModel(put(fakeHass(), 'Time Zone', 'unavailable')).tz === 'Europe/Rome', 'no time zone: HA zone');
+    // action(): the node of each device, never another device's action.
+    const two = (o) => {
+      const hh = fakeHass();
+      hh.devices = { ...hh.devices, dev3: { id: 'dev3', name: 'Irry Back', manufacturer: 'Irry', connections: [['mac', 'aa:bb:cc:12:34:56']], ...(o.d3 || {}) } };
+      if (o.d1) hh.devices.dev1 = { ...hh.devices.dev1, ...o.d1 };
+      hh.services = { esphome: Object.fromEntries([...o.nodes.flatMap((p) => ['rapid', 'set_slot', 'get'].map((a) => `${p}_${a}`)), 'other_rapid'].map((k) => [k, {}])) };
+      return [lib.irryModel(hh, 'dev1'), lib.irryModel(hh, 'dev3')].map((m) => m && m.action('get'));
+    };
+    let a2 = two({ nodes: ['it7ws_8dee48', 'it7ws_123456'] });
+    ok(a2[0] === 'it7ws_8dee48_get' && a2[1] === 'it7ws_123456_get', `two devices by MAC ${a2}`);
+    a2 = two({ nodes: ['it7ws_8dee48', 'backyard'], d3: { configuration_url: 'http://backyard.local:80' } });
+    ok(a2[0] === 'it7ws_8dee48_get' && a2[1] === 'backyard_get', `renamed node by its web UI host ${a2}`);
+    a2 = two({ nodes: ['front', 'backyard'], d3: { name: 'backyard' } });
+    ok(a2[0] === 'front_get' && a2[1] === 'backyard_get', `registry name, then the last one by exclusion ${a2}`);
+    a2 = two({ nodes: ['front', 'backyard'], d3: { configuration_url: 'http://192.168.1.20:80' } });
+    ok(a2[0] === null && a2[1] === null, `two renamed nodes, no hint: no action ${a2}`);
+    const h1n = fakeHass(); h1n.services = { esphome: { garden_rapid: {}, garden_set_slot: {}, garden_get: {}, other_rapid: {} } };
+    ok(lib.irryModel(h1n).action('rapid') === 'garden_rapid', 'one device, renamed node');
+    // index(): two entities with the same name.
+    const hc2 = fakeHass(), vp = nm(hc2, 'Valve Power'), rn = Object.keys(hc2.entities).find((i) => i.endsWith('_rain_last_24h'));
+    hc2.entities = { [rn]: { ...hc2.entities[rn], name: 'Valve Power' }, ...hc2.entities };
+    hc2.entities[rn] = { ...hc2.entities[rn], name: 'Valve Power' };
+    const mc2 = lib.irryModel(hc2);
+    ok(rn && mc2.E('valve_power') === vp && mc2.E('rain_last_24h') === rn, `slug collision ${mc2.E('valve_power')} ${mc2.E('rain_last_24h')}`);
+    // errText: HA wraps the device message.
+    const me = lib.irryModel(fakeHass()), pre = 'Failed to execute the action call it7ws_8dee48_set_slot on Irry The Seven 8dee48: ';
+    ok(lib.errText(me, t, 'it', new Error(pre + 'limit')) === t('e_limit') && lib.errText(me, t, 'it', new Error('limit')) === t('e_limit'), 'errText: limit with the HA prefix');
+    ok(lib.errText(me, t, 'it', new Error(pre + 'limit mon 06:00-06:10 1,2,3,4')).includes('Prato'), 'errText: limit at, with the HA prefix');
+    ok(lib.errText(me, t, 'it', new Error(pre + 'unlimited')).startsWith('Errore'), 'errText: not a limit');
+    // Memo: one model per states reference, one translator per language, no signature with the same states.
+    const hm2 = fakeHass(), m1 = lib.irryModel(hm2);
+    ok(lib.irryModel({ ...hm2 }) === m1 && lib.irryModel({ ...hm2, states: { ...hm2.states } }) !== m1 && lib.tr('it') === lib.tr('it'), 'model and translator memo');
+    const rw = mk(lib.IrryRowsCard, { rows: [{ entity: m1.E('units'), edit: true }] }, hm2), rcw = rw.card;
+    let sg = 0; const sg0 = rcw.signature.bind(rcw); rcw.signature = () => { sg++; return sg0(); };
+    rcw.hass = { ...hm2 }; const sgA = sg;
+    rcw.hass = put({ ...hm2 }, 'Units', 'Imperial');
+    ok(sgA === 0 && sg === 1, `signature only when states change ${sgA} ${sg}`);
+    // Rows: a refused write is shown, the next good one clears it; the entity picker counts as editing.
+    const hf = fakeHass(); hf.fail = 'boom';
+    const rf = mk(lib.IrryRowsCard, { rows: [{ entity: lib.irryModel(hf).E('units'), edit: true, name: 'Unità' }] }, hf);
+    await rf.card.write(rf.card._c.rows[0], fe('Metric'));
+    const fh = rf.html(); hf.fail = null;
+    await rf.card.write(rf.card._c.rows[0], fe('Metric'));
+    ok(/ha-alert alert-type="error">Unità: Errore: boom/.test(fh) && !rf.html().includes('<ha-alert'), 'rows: write error shown, then cleared');
+    rf.card.shadowRoot.activeElement = { tagName: 'HA-SELECTOR' };
+    ok(rf.card.busy() === true, 'busy: ha-selector');
+    rf.card.shadowRoot.activeElement = null;
+    // Rapid: a draft is kept while the card follows labels and R8 Mode.
+    const hq = fakeHass({ r8: 'Zone 7' }), rq = mk(lib.IrryRapidCard, {}, hq), cq = rq.card;
+    cq._v.duration = 33; cq.changed('r');
+    const hq2 = put(put({ ...hq }, 'Zone 1 Label', 'Siepe'), 'R8 Mode', 'Aux');
+    cq.hass = hq2;
+    ok(rq.html().includes('Siepe') && cq._v.duration === 33 && cq._edit && !cq._order.includes(7) && !/data-zone="7"/.test(rq.html()), 'rapid: draft kept, labels and zones follow');
+    // GetCard: an error for a past day is retried after a minute, a reply is kept.
+    const hg = fakeHass(); let wsn = 0, bad2 = true;
+    hg.callWS = (q) => { wsn++; return bad2 ? Promise.reject(new Error('down')) : Promise.resolve({ response: { j: { d: 1 } } }); };
+    const gq = mk(lib.IrryDayCard, {}, hg).card; await tick();
+    const w0 = wsn; gq.got('hist', 100, Infinity); await tick(); gq.got('hist', 100, Infinity);
+    const w1 = wsn; gq._d['hist/100'].at -= 61e3; bad2 = false; gq.got('hist', 100, Infinity); await tick();
+    const w2 = wsn; gq._d['hist/100'].at -= 3600e3; gq.got('hist', 100, Infinity);
+    ok(w1 - w0 === 1 && w2 - w1 === 1 && wsn === w2 && gq._d['hist/100'].j.d === 1, `get: error retried, reply kept ${w0} ${w1} ${w2} ${wsn}`);
+    // hacsReady: a listed card never defined delays generate() at most HACS_WAIT; defined later, it regenerates.
+    const keep = [reg['windrose-card'], reg['mini-graph-card']];
+    delete reg['windrose-card']; delete reg['mini-graph-card'];
+    const hh = fakeHass(); hh.resources = [{ url: '/hacsfiles/windrose-card/windrose-card.js' }];
+    const t1 = Date.now(); await lib.hacsReady(hh); const dt = Date.now() - t1;
+    ok(dt >= 1400 && dt < 2500, `hacsReady: at most 1.5 s (${dt} ms)`);
+    const hB = { ...hh, states: { ...hh.states } }; lib.shouldRegenerate({}, hh, hh);
+    reg['windrose-card'] = class {};
+    ok(lib.shouldRegenerate({}, hh, hB) === true, 'shouldRegenerate: HACS card defined late');
+    delete reg['windrose-card'];
+    if (keep[0]) reg['windrose-card'] = keep[0];
+    if (keep[1]) reg['mini-graph-card'] = keep[1];
+    // TabsCard: setConfig again on the same element shows the new tabs.
+    const ls2 = global.localStorage; global.localStorage = { getItem: () => null, setItem() {} };
+    const tb = mk(lib.IrryTabsCard, { tabs: [{ id: 'a', name: 'Uno', sections: [] }, { id: 'b', name: 'Due', sections: [] }] }, fakeHass());
+    const tb0 = tb.html();
+    tb.card.setConfig({ tabs: [{ id: 'a', name: 'Tre', sections: [] }, { id: 'c', name: 'Quattro', sections: [] }] });
+    global.localStorage = ls2;
+    ok(tb0.includes('Uno') && tb.html().includes('Tre') && tb.html().includes('Quattro') && !tb.html().includes('Uno'), 'tabs: setConfig on a reused element');
+    // M-F3 parity with the firmware: zone 7 in Aux mode does not count in overlaps.
+    const ov = (r8) => {
+      let hv = fakeHass({ r8 });
+      for (const [k, v] of [['Start', '06:00:00'], ['Duration', '10.0'], ['Enable', 'on'], ['1-Mon', 'on']]) hv = put(hv, `Zone 7 S1 ${k}`, v);
+      const mv = lib.irryModel(hv), w = lib.ovDay(lib.devSlots(mv), lib.dnOf('2026-11-02'));
+      return w.some((x) => x.zs.some((i) => mv.zones[i] === 7));
+    };
+    ok(ov('Zone 7') === true && ov('Aux') === false, 'M-F3: zone 7 in Aux mode not in overlaps');
   }
   console.log(`test.cjs: ${n} checks, ${fail} failed`);
   process.exit(fail ? 1 : 0);
