@@ -12,7 +12,7 @@
 // Units: the device "Units" select (Auto = from the time zone), as in the device UI; HA sensor values
 // are converted from whatever unit HA shows them in. Graphs keep the HA unit.
 
-const IRRY_VERSION = '0.4.6';
+const IRRY_VERSION = '0.4.7';
 const I18N = /*I18N*/ {} /*END*/;
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -478,6 +478,7 @@ function fmtState(f, s, c, row = {}) {
       return src && !BAD.includes(src.state) ? `${val} · ${fmtState('pos', src, c)}` : val;
     }
     case 'yes': return t(v === 'on' ? K('x_yes') : K('x_no'));
+    case 'pw': return BAD.includes(v) ? '-' : t(v === 'on' ? K('vp_on') : K('vp_off'));
     case 'fwst': return BAD.includes(v) ? '-' : fwText(t, v);
     case 'batt': return BAD.includes(v) ? '-' : t(v === 'on' ? K('m_batt_low') : K('m_batt_ok'));
     case 'batt': return t(v === 'on' ? K('m_batt_low') : K('m_batt_ok'));
@@ -605,6 +606,8 @@ function statusView(m, t) {
         heading(t('st'), 'mdi:sprinkler-variant'),
         rows(m, [
           { k: 'zone_active', name: t('now_run'), fmt: 'zact' },
+          // Valve Power: the state of the valve supply (read-only), tap = history like the other rows.
+          { k: 'valve_power', name: t('vp'), fmt: 'pw', icon: ['mdi:power-plug', 'mdi:power-plug-off'] },
           { k: 'problems', name: t('x_problems'), fmt: 'prob', ref: E('irrigation_overlap_warning') || undefined },
           { k: 'next_irrigation', name: t('next'), fmt: 'next', ref: E('programs_paused') || undefined },
           { k: 'wind_resume', name: t('x_wind_res'), fmt: 'ts', dash: true },
@@ -614,10 +617,9 @@ function statusView(m, t) {
           has('wi_fi_network') ? { k: 'wi_fi_network', name: t('wifi'), fmt: 'wifi' } : { k: 'wi_fi_fallback_active', name: t('wfb_chip'), fmt: 'yes' },
         ]),
         // Full-width buttons, one per line, the state on the button (st: on / off text) and long press = history; a
-        // tile cannot be inert. Valve Power is read-only (tap = history). Aux is refused in Sync mode and during an
+        // tile cannot be inert. Aux is refused in Sync mode and during an
         // install; Silence Alarm (Waveshare only) does nothing without an alarm.
         rows(m, [
-          { k: 'valve_power', name: t('vp'), wide: true, st: [t('vp_on'), t('vp_off')] },
           m.aux && { k: 'aux', name: auxName && !BAD.includes(auxName) ? auxName : t('aux_def'), edit: true, wide: true, st: [t('vp_on'), t('vp_off')],
             off: [{ k: 'aux_mode', state: 'Sync', why: t('x_why_sync') }, { k: 'firmware_update_status', state: 'installing', why: t('x_why_fw') }] },
           { k: 'programs_paused', name: t('pause'), edit: true, wide: true, st: [t('x_yes'), t('x_no')] },
@@ -1054,7 +1056,8 @@ const CSS = `
   .msg[data-k=err]{color:var(--error-color)} .msg[data-k=ok]{color:var(--success-color)} .msg[data-k=warn]{color:var(--warning-color)}
   .msg.top{border-top:0;border-bottom:1px solid var(--divider-color);padding:4px 0}
   .r + .r{border-top:1px solid var(--divider-color)}
-  .r .n{flex:1;color:var(--secondary-text-color)} .r .v{color:var(--primary-text-color);text-align:right}
+  .r .n{flex:1;color:var(--secondary-text-color)} .r .ic{--mdc-icon-size:20px;color:var(--state-icon-color,var(--secondary-text-color));margin-right:-4px}
+  .r .ic.on{color:var(--state-active-color,var(--primary-color))} .r .v{color:var(--primary-text-color);text-align:right}
   .r.tap{cursor:pointer} .r input[type=text]{width:12em} .r select{max-width:16em} .r ha-selector{flex:0 1 18em;min-width:12em}
   input.bad,input:invalid{border-color:var(--error-color)}
   .h{font-size:12px;font-weight:500;letter-spacing:.04em;text-transform:uppercase;color:var(--secondary-text-color);margin:14px 0 2px}
@@ -1247,7 +1250,7 @@ class IrryRowsCard extends IrryCard {
       const ctl = row.edit ? this.control(dom, row, s, i, name) : null;
       html.push(ctl
         ? `<div class="r"><span class="n">${dom === 'button' ? '' : esc(name)}</span>${ctl}</div>`
-        : `<div class="r tap" data-more="${esc(row.entity)}"><span class="n">${esc(name)}</span><span class="v">${esc(((x) => (row.dash && (EMPTY(s.state) || x === '-') ? '—' : x))(fmtState(row.fmt, s, c, row)))}</span></div>`);
+        : `<div class="r tap" data-more="${esc(row.entity)}">${row.icon ? `<ha-icon class="ic${s.state === 'on' ? ' on' : ''}" icon="${esc(row.icon[s.state === 'on' ? 0 : 1])}"></ha-icon>` : ''}<span class="n">${esc(name)}</span><span class="v">${esc(((x) => (row.dash && (EMPTY(s.state) || x === '-') ? '—' : x))(fmtState(row.fmt, s, c, row)))}</span></div>`);
     });
     // Message line, reserved (empty) on cards that write: the card keeps its height. Refusal, then the
     // confirmation of a button (row.ok), then (irr) the irrigation lines of the banner. msg_top: above the rows.

@@ -823,11 +823,18 @@ function refs(o, out = []) {
     ok(/disabled/.test(ctl(a, ac, 'silence_alarm')), 'silence: inert with the buzzer off');
     // Full-width buttons in Stato: Valve Power, Aux, Pause programs one per line, state on the button.
     const wk = ac.rows.filter((r) => r.wide).map((r) => r.entity.replace(/^.*_8dee48_/, ''));
-    ok(['valve_power', 'aux', 'programs_paused'].every((k, i) => wk[i] === k), `status: full-width valve, aux, pause ${wk}`);
+    ok(['aux', 'programs_paused', 'silence_alarm'].every((k, i) => wk[i] === k) && wk.length === 3, `status: full-width aux, pause, silence ${wk}`);
     a.card.hass = put(put(h0, 'Programs Paused', 'on'), 'Valve Power', 'off');
     const pb = ctl(a, ac, 'programs_paused');
     ok(/class="w on"/.test(pb) && /aria-pressed="true"/.test(pb) && /data-lp=/.test(pb), 'pause: filled while on, long press = history');
-    ok(a.html().includes(`<span>${t('vp')}</span><span class="ws">${t('vp_off')}</span>`) && /class="w ro" data-more=/.test(a.html()), 'valve power: state on the button, tap = history');
+    // Valve Power: a read-only row of the Stato card (icon, On / Off), tap = history; no longer a button.
+    const vc = cardOf(cards, 'zone_active'), vr = vc.rows.find((r) => /valve_power$/.test(r.entity || ''));
+    ok(vr && !vr.wide && !vr.edit && vr.fmt === 'pw' && !ac.rows.some((r) => /valve_power$/.test(r.entity || '')), 'valve power: a state row in Stato, not a button');
+    for (const [st, txt, ic] of [['off', t('vp_off'), 'mdi:power-plug-off'], ['on', t('vp_on'), 'mdi:power-plug']]) {
+      const vh = mk(lib.IrryRowsCard, vc, put(h0, 'Valve Power', st)).html(), id = vr.entity.replace(/\./g, '\\.');
+      ok(new RegExp(`<div class="r tap" data-more="${id}"><ha-icon class="ic${st === 'on' ? ' on' : ''}" icon="${ic}"></ha-icon><span class="n">${t('vp')}</span><span class="v">${txt}</span>`).test(vh)
+        && !new RegExp(`<button[^>]*${id}`).test(vh), `valve power ${st}: icon, ${txt}, tap = history`);
+    }
     // Find Device in Diagnostics: answer and inert for the command time, then active again.
     const stv = await reg['ll-strategy-view-irry-settings'].generate({}, h0), sall = [];
     (function walk(o) { if (o && typeof o === 'object') { if (o.type === 'custom:irry-rows-card') sall.push(o); Object.values(o).forEach(walk); } })(JSON.parse(JSON.stringify(stv)));
@@ -887,8 +894,6 @@ function refs(o, out = []) {
     // [view, entity suffix, label, states, expected]: on/off = active (filled / grey), inert = outlined with the reason
     // (why) on a tap and no command; ro = read-only, tap = history.
     const C = [
-      ['status', 'valve_power', 'valve power off', [['Valve Power', 'off']], { ro: true, on: false }],
-      ['status', 'valve_power', 'valve power on', [['Valve Power', 'on']], { ro: true, on: true }],
       ['status', '_aux', 'aux off', [['Aux', 'off']], { on: false }],
       ['status', '_aux', 'aux on', [['Aux', 'on']], { on: true }],
       ['status', '_aux', 'aux Sync', [['Aux Mode', 'Sync']], { why: t('x_why_sync') }],
