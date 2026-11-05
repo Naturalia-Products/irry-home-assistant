@@ -728,6 +728,12 @@ function refs(o, out = []) {
     h3.fail = 'Failed to execute the action call it7ws_8dee48_zone on Irry: open_limit';
     await r3.card.write(row, fe({ checked: true }));
     ok(!on(r3) && r3.html().includes(t('e_open_limit')) && !r3.card._pd[row.entity], 'refused: real state and reason');
+    ok(h3.calls.length && h3.calls.every((c) => c.notify === false), 'refused: no HA toast, the card shows it');
+    r3.card._ems = 30; h3.fail = 'Failed: open_limit';
+    await r3.card.write(row, fe({ checked: true }));
+    ok(r3.html().includes(t('e_open_limit')), 'refused again: reason shown');
+    await new Promise((r) => setTimeout(r, 80));
+    ok(!r3.html().includes('<ha-alert') && !r3.html().includes(t('e_open_limit')) && r3.card._err === '', 'reason gone after the timeout');
   }
   console.log(`test.cjs: ${n} checks, ${fail} failed`);
   process.exit(fail ? 1 : 0);

@@ -108,7 +108,7 @@ function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 
     entities, states,
     services: { esphome: { it7ws_8dee48_rapid: {}, it7ws_8dee48_set_slot: {}, it7ws_8dee48_get: {}, it7ws_8dee48_zone: {}, other_rapid: {} } },
     calls: [], ws: [], getData: {},
-    callService(domain, service, data, target) { this.calls.push({ domain, service, data, target }); return this.fail ? Promise.reject(new Error(this.fail)) : Promise.resolve(); },
+    callService(domain, service, data, target, notify = true) { this.calls.push({ domain, service, data, target, notify }); return this.fail ? Promise.reject(new Error(this.fail)) : Promise.resolve(); },
     // A service with return_response: { context, response: { j } }; getData keys "what/arg" or "what".
     callWS(q) {
       this.ws.push(q);

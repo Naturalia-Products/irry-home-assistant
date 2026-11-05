@@ -12,7 +12,7 @@
 // Units: the device "Units" select (Auto = from the time zone), as in the device UI; HA sensor values
 // are converted from whatever unit HA shows them in. Graphs keep the HA unit.
 
-const IRRY_VERSION = '0.4.1';
+const IRRY_VERSION = '0.4.2';
 const I18N = /*I18N*/ {} /*END*/;
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -1133,7 +1133,7 @@ function rowShown(h, row) { return !row.only || [].concat(row.only.state).includ
 // Rows: { entity, name, fmt, edit, hide_empty, ref, refs, confirm } or { head }.
 // Read-only rows open the HA more-info dialog; edit rows write with the entity's own service.
 // A toggle keeps the requested state until the entity reports it, at most PEND_MS (as PEND in the device UI).
-const PEND_MS = 10e3;
+const PEND_MS = 10e3, ERR_MS = 3e3;
 class IrryRowsCard extends IrryCard {
   getCardSize() { return 1 + ((this._c && this._c.rows) || []).length; }
   // Pending toggles: dropped once the entity has the requested state, or after PEND_MS.
@@ -1218,7 +1218,8 @@ class IrryRowsCard extends IrryCard {
     return null;
   }
   async write(row, el) {
-    const h = this._h, s = h.states[row.entity], dom = row.entity.split('.')[0], target = { entity_id: row.entity };
+    // The reason is shown in the card: HA's own toast (notifyOnError, 5th argument) stays off.
+    const h = this._h, call = (d, sv, data, tg) => h.callService(d, sv, data, tg, false), s = h.states[row.entity], dom = row.entity.split('.')[0], target = { entity_id: row.entity };
     this._err = '';
     try {
       // Zone N Manual: the zone action (firmware 2.6.1) answers why an opening is refused; the switch does not.
@@ -1229,17 +1230,17 @@ class IrryRowsCard extends IrryCard {
         (this._pd = this._pd || {})[e] = { v: el.checked ? 'on' : 'off', at };
         setTimeout(() => { if (this._pd[e] && this._pd[e].at === at) { this._sig = ''; if (this._h) this.hass = this._h; } }, (this._pms || PEND_MS) + 50);
       }
-      if (za) await h.callService('esphome', za, { zone: row.zone, on: !!el.checked });
-      else if (dom === 'switch' || dom === 'input_boolean') await h.callService(dom, el.checked ? 'turn_on' : 'turn_off', {}, target);
-      else if (dom === 'select') await h.callService('select', 'select_option', { option: el.value }, target);
+      if (za) await call('esphome', za, { zone: row.zone, on: !!el.checked });
+      else if (dom === 'switch' || dom === 'input_boolean') await call(dom, el.checked ? 'turn_on' : 'turn_off', {}, target);
+      else if (dom === 'select') await call('select', 'select_option', { option: el.value }, target);
       else if (dom === 'text') {
         if (row.pat && el.value && !new RegExp(row.pat).test(el.value)) { if (el.classList) el.classList.add('bad'); return; }
-        await h.callService('text', 'set_value', { value: el.value }, target);
+        await call('text', 'set_value', { value: el.value }, target);
       }
-      else if (dom === 'time') { if (el.value) await h.callService('time', 'set_value', { time: `${el.value.slice(0, 5)}:00` }, target); }
+      else if (dom === 'time') { if (el.value) await call('time', 'set_value', { time: `${el.value.slice(0, 5)}:00` }, target); }
       else if (dom === 'button') {
         if (row.confirm && !window.confirm(row.confirm)) return;
-        await h.callService('button', 'press', {}, target);
+        await call('button', 'press', {}, target);
       } else if (dom === 'number') {
         // Shown in the device unit, written in the entity's own unit, on its step and within its range.
         const a = s.attributes, u = a.unit_of_measurement, x = devValue(parseFloat(s.state), u, this._m.imp);
@@ -1248,12 +1249,14 @@ class IrryRowsCard extends IrryCard {
         if (x) v = toUnit(v, x[1], u);
         const step = a.step || 1;
         v = Math.min(a.max ?? v, Math.max(a.min ?? v, Math.round(v / step) * step));
-        await h.callService('number', 'set_value', { value: +v.toFixed(6) }, target);
+        await call('number', 'set_value', { value: +v.toFixed(6) }, target);
       }
     } catch (e) {
       // Refused or invalid: the reason above the rows, and the device value again.
       if (this._pd) delete this._pd[row.entity];
-      this._err = `${row.name || row.entity}: ${errText(this._m, this._t, this._l, e)}`;
+      const msg = this._err = `${row.name || row.entity}: ${errText(this._m, this._t, this._l, e)}`;
+      // Gone after ERR_MS, unless a newer error replaced it.
+      setTimeout(() => { if (this._err === msg) { this._err = ''; this._sig = ''; if (this._h) this.hass = this._h; } }, this._ems || ERR_MS);
     }
     el.blur();
     // Repaint from the newest hass: the new state may have arrived while the call was running.
