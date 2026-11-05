@@ -652,6 +652,83 @@ function refs(o, out = []) {
     const rx = mk(lib.IrryRapidCard, { device: 'dev1' }, hx); await tick(); await tick();
     ok(![t('uni'), t('mixed'), t('empty')].some((x) => rx.html().includes('>' + x + '<')), 'rapid: no rk, no flag');
   }
+  // ---- 0.4.1: zone action, weather data in use (firmware 2.6.1)
+  {
+    const nm = (hh, name) => Object.keys(hh.entities).find((i) => hh.entities[i].name === name);
+    const put = (hh, name, v) => { const id = nm(hh, name); hh.states = { ...hh.states, [id]: { ...hh.states[id], state: v } }; return hh; };
+    const cx = (hh) => ({ h: hh, m: lib.irryModel(hh), t, l: 'it' });
+    const fe = (x) => ({ blur() {}, classList: { add() {} }, ...x });
+    // Zone toggles: esphome.<node>_zone with zone / on, the refusal code in the user language.
+    const hz = fakeHass(), dz = await reg['ll-strategy-dashboard-irry-the-seven'].generate({}, hz), jz = JSON.stringify(dz);
+    ok((jz.match(/"zone":1[,}]/g) || []).length >= 2, 'zone rows carry their zone number');
+    const row = { entity: nm(hz, 'Zone 4 Manual'), name: 'Zona 4', fmt: 'open', edit: true, zone: 4 };
+    const rc = mk(lib.IrryRowsCard, { device: 'dev1', rows: [row] }, hz);
+    await rc.card.write(row, fe({ checked: true }));
+    const c1 = hz.calls.pop();
+    ok(c1 && c1.domain === 'esphome' && c1.service === 'it7ws_8dee48_zone' && c1.data.zone === 4 && c1.data.on === true, `zone action ${JSON.stringify(c1)}`);
+    await rc.card.write(row, fe({ checked: false }));
+    ok(hz.calls.pop().data.on === false, 'zone action: close');
+    hz.fail = 'Failed to execute the action call it7ws_8dee48_zone on Irry The Seven 8dee48: open_limit';
+    await rc.card.write(row, fe({ checked: true })); hz.fail = null;
+    ok(rc.html().includes('<ha-alert') && rc.html().includes(t('e_open_limit')), 'zone refused: open_limit shown');
+    for (const [code, k] of [['ota_pv', 'e_ota_pv'], ['zone', 'e_zone'], ['limit', 'e_limit']])
+      ok(lib.errText(cx(hz).m, t, 'it', new Error(`Failed to execute the action call x on y: ${code}`)) === t(k), `errText ${code}`);
+    ok(lib.errText(cx(hz).m, t, 'it', 'nolimit').startsWith(t('e_generic', { err: '' }).trim().slice(0, 4)), 'errText: a word ending in limit is not the code');
+    // Firmware before 2.6.1 (no zone action): the switch, as before.
+    const ho = fakeHass(); delete ho.services.esphome.it7ws_8dee48_zone;
+    const ro = mk(lib.IrryRowsCard, { device: 'dev1', rows: [row] }, ho);
+    await ro.card.write({ ...row, entity: nm(ho, 'Zone 4 Manual') }, fe({ checked: true }));
+    const c2 = ho.calls.pop();
+    ok(c2.domain === 'switch' && c2.service === 'turn_on', 'older firmware: switch turn_on');
+    // Weather data in use: "{n} days · estimated: wind, solar radiation", info, as the device Weather tab.
+    let hw = put(put(put(fakeHass(), 'Weather Data', 'fallback'), 'Weather Fallback', 'wind,solar'), 'Weather Days Used', '2');
+    const cw = cx(hw), want = `${t('m_days', { count: 2 })} · ${t('m_q_fb', { list: `${t('m_u').toLowerCase()}, ${t('m_rs').toLowerCase()}` })}`;
+    ok(lib.fmtState('wdata', hw.states[nm(hw, 'Weather Data')], cw) === want, `weather data row: ${lib.fmtState('wdata', hw.states[nm(hw, 'Weather Data')], cw)}`);
+    const aw = lib.alerts(cw.m, cw).find(([, x]) => x.startsWith(t('m_data')));
+    ok(aw && aw[0] === 'info' && aw[1] === `${t('m_data')}: ${want}` && !lib.alerts(cw.m, cw).some(([, x]) => x === t('x_wd_fallback')), 'banner: weather data line, info');
+    hw = put(put(fakeHass(), 'Weather Data', 'ok'), 'Weather Days Used', '3');
+    ok(lib.fmtState('wdata', hw.states[nm(hw, 'Weather Data')], cx(hw)) === t('m_days', { count: 3 }), 'weather data ok: days only');
+    hw = put(put(fakeHass(), 'Weather Data', 'off'), 'Weather Days Used', 'unknown');
+    ok(lib.fmtState('wdata', hw.states[nm(hw, 'Weather Data')], cx(hw)) === t('m_off'), 'method off: Off');
+    const hf = put(put(fakeHass(), 'Weather Data', 'fallback'), 'Weather Fallback', 'humidity');
+    for (const k of ['Weather Fallback', 'Weather Days Used']) delete hf.entities[nm(hf, k)];
+    ok(lib.alerts(lib.irryModel(hf), cx(hf)).some(([, x]) => x === t('x_wd_fallback')), 'older firmware: fallback text');
+    const rw = mk(lib.IrryRowsCard, { device: 'dev1', rows: [{ entity: nm(hz, 'Weather Data'), name: 'D', fmt: 'wdata', refs: [nm(hz, 'Weather Fallback')] }] },
+      put(put(fakeHass(), 'Weather Data', 'fallback'), 'Weather Fallback', 'humidity'));
+    const w0 = rw.html(); rw.card.hass = put(put(put(fakeHass(), 'Weather Data', 'fallback'), 'Weather Fallback', 'humidity'), 'Weather Fallback', 'wind');
+    ok(w0.includes(t('m_rh').toLowerCase()) && rw.html().includes(t('m_u').toLowerCase()), 'weather data row follows Weather Fallback');
+  }
+  // ---- 0.4.1: toggles repaint from the newest hass and keep the requested state until it arrives
+  {
+    const nm = (hh, name) => Object.keys(hh.entities).find((i) => hh.entities[i].name === name);
+    const put = (hh, name, v) => { const id = nm(hh, name); return { ...hh, states: { ...hh.states, [id]: { ...hh.states[id], state: v } } }; };
+    const fe = (x) => ({ blur() {}, classList: { add() {} }, ...x });
+    const on = (c) => /class="tg"[^>]* checked/.test(c.html());
+    const h0 = fakeHass(), row = { entity: nm(h0, 'Zone 4 Manual'), name: 'Zona 4', fmt: 'open', edit: true, zone: 4 };
+    const rc = mk(lib.IrryRowsCard, { device: 'dev1', rows: [row] }, h0);
+    // The new state arrives before callService answers (the zone action replies after the switch publishes).
+    h0.callService = function (...a) { this.calls.push(a); rc.card.hass = put(h0, 'Zone 4 Manual', 'on'); return Promise.resolve(); };
+    await rc.card.write(row, fe({ checked: true }));
+    ok(on(rc) && rc.html().includes(t('x_open')), 'state before the reply: shown open, not the old hass');
+    // No state yet: the requested state is kept, then the real one after the timeout.
+    const h1 = fakeHass(), r1 = mk(lib.IrryRowsCard, { device: 'dev1', rows: [row] }, h1); r1.card._pms = 30;
+    await r1.card.write(row, fe({ checked: true }));
+    ok(on(r1), 'pending: requested state kept');
+    r1.card.hass = put(h1, 'Uptime', '5');
+    ok(on(r1), 'pending: kept across another state change');
+    await new Promise((r) => setTimeout(r, 120));
+    ok(!on(r1), 'pending: back to the real state after the timeout');
+    // Arrives later: the pending entry goes away with the real state.
+    const h2 = fakeHass(), r2 = mk(lib.IrryRowsCard, { device: 'dev1', rows: [row] }, h2);
+    await r2.card.write(row, fe({ checked: true }));
+    r2.card.hass = put(h2, 'Zone 4 Manual', 'on');
+    ok(on(r2) && Object.keys(r2.card._pd).length === 0, 'pending cleared by the real state');
+    // Refused: no pending, the real state and the reason.
+    const h3 = fakeHass(), r3 = mk(lib.IrryRowsCard, { device: 'dev1', rows: [row] }, h3);
+    h3.fail = 'Failed to execute the action call it7ws_8dee48_zone on Irry: open_limit';
+    await r3.card.write(row, fe({ checked: true }));
+    ok(!on(r3) && r3.html().includes(t('e_open_limit')) && !r3.card._pd[row.entity], 'refused: real state and reason');
+  }
   console.log(`test.cjs: ${n} checks, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

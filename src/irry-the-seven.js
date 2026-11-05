@@ -12,7 +12,7 @@
 // Units: the device "Units" select (Auto = from the time zone), as in the device UI; HA sensor values
 // are converted from whatever unit HA shows them in. Graphs keep the HA unit.
 
-const IRRY_VERSION = '0.4.0';
+const IRRY_VERSION = '0.4.1';
 const I18N = /*I18N*/ {} /*END*/;
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -401,12 +401,14 @@ async function irryGet(h, m, what, arg) {
   const x = (r && (r.response || r)) || {};
   return x.j;
 }
+// Codes the actions answer alone at the end of error_message (rapid / set_slot limit; zone: zone, ota_pv, open_limit).
+const ECODE = { limit: K('e_limit'), open_limit: K('e_open_limit'), ota_pv: K('e_ota_pv'), zone: K('e_zone') };
 // Firmware error text ("limit mon 2026-11-02 06:00-06:10 1,2,3,4", or a code) in the user language.
 function errText(m, t, l, e) {
   const msg = String((e && (e.message || e.error)) || e);
   const g = msg.match(/limit (\w{3})(?: (\d{4})-(\d\d)-(\d\d))? (\d\d:\d\d)-(\d\d:\d\d) ([\d,]+)/);
   // HA wraps the device error_message: "Failed to execute the action call <name> on <device>: <message>".
-  if (!g) return /(^|\W)limit$/.test(msg) ? t('e_limit') : t('e_generic', { err: msg });
+  if (!g) { const k = msg.match(/(?:^|: )(limit|open_limit|ota_pv|zone)$/); return k ? t(ECODE[k[1]]) : t('e_generic', { err: msg }); }
   const when = g[2] ? dateText(l, g[2], g[3], g[4]) : dayNames(l)[DAYS.indexOf(g[1])];
   const zs = g[7].split(',').filter((z) => m.zones.includes(+z));
   return t('e_limit_at', { count: zs.length, when, from: g[5], to: g[6], zones: zs.map((z) => m.label(+z)).join(', ') });
@@ -417,6 +419,16 @@ function ovlText(m, t, l, s) {
   if (!g) return s;
   const when = g[3] ? dateText(l, g[3], g[4], g[5]) : dayNames(l)[DAYS.indexOf(g[2])];
   return `${when} · ${t('ovl_ban', { count: +g[1], from: g[6], to: g[7], zones: g[8].split(',').filter((z) => m.zones.includes(+z)).map((z) => m.label(+z)).join(', ') })}`;
+}
+// Weather data in use, as the device Weather tab: "{n} days · estimated: wind, solar radiation" from Weather Days Used and
+// Weather Fallback (firmware 2.6.1, humidity,wind,solar); null when the firmware has neither entity.
+const WFB = { humidity: K('m_rh'), wind: K('m_u'), solar: K('m_rs') };
+function wdUsed(m, t) {
+  const fb = m.so('weather_fallback'), du = m.so('weather_days_used');
+  if (!fb && !du) return null;
+  const n = parseInt(du && du.state, 10);
+  const list = fb && !BAD.includes(fb.state) ? fb.state.split(',').map((x) => WFB[x.trim()]).filter(Boolean).map((k) => t(k).toLowerCase()).join(', ') : '';
+  return [isNaN(n) ? '' : t('m_days', { count: n }), list ? t('m_q_fb', { list }) : ''].filter(Boolean).join(' · ') || null;
 }
 // Problems (firmware 2.6.0, spec §8.3): the health codes that are not OK, comma-separated, '' = all OK. Worded with the
 // device UI texts of the Status health card; ovl with the Overlap Warning window.
@@ -454,7 +466,8 @@ function fmtState(f, s, c, row = {}) {
   const map = (o) => (o[v] ? t(o[v]) : v);
   switch (f) {
     case 'plant': case 'aux': case 'fwm': case 'units': return map(OPT[f]);
-    case 'method': case 'wdata': case 'feed': case 'wpause': case 'tsrc': case 'wifi': case 'rtc': case 'pos': return map(STATE[f]);
+    case 'wdata': if ((v === 'ok' || v === 'fallback') && wdUsed(m, t)) return wdUsed(m, t);  // falls through
+    case 'method': case 'feed': case 'wpause': case 'tsrc': case 'wifi': case 'rtc': case 'pos': return map(STATE[f]);
     case 'buz': return map(OPT.buz);
     case 'leak': return BAD.includes(v) ? '-' : t(v === 'on' ? K('es_leak_y') : K('es_leak_n'));
     case 'posv': {  // position value and where it comes from (row.ref: Position Source or Altitude Source)
@@ -555,7 +568,7 @@ function statusView(m, t) {
   const auxName = m.st('aux_label');
   // Zones as rows: a tile would show the switch state (On / Off) where the valve is Open / Closed.
   const zt = rows(m, m.zones.flatMap((n) => [
-    { k: `zone_${n}_manual`, name: m.label(n), fmt: 'open', edit: true },
+    { k: `zone_${n}_manual`, name: m.label(n), fmt: 'open', edit: true, zone: n },
     { k: `zone_${n}_end`, name: `${m.label(n)} · ${t('x_end')}`, hide_empty: true },
     // Firmware 2.6.0: the zone's own next start (empty = none); a rain skip is said by the banner.
     { k: `zone_${n}_next_start`, name: `${m.label(n)} · ${t('next')}`, fmt: 'ts', hide_empty: true },
@@ -612,7 +625,7 @@ function statusView(m, t) {
         heading(t('m_meth'), 'mdi:sprout'),
         rows(m, [
           { k: 'irrigation_method', name: t('m_meth'), fmt: 'method' },
-          { k: 'weather_data', name: t('x_wdata'), fmt: 'wdata' },
+          { k: 'weather_data', name: t('x_wdata'), fmt: 'wdata', refs: [E('weather_days_used'), E('weather_fallback')].filter(Boolean) },
           { k: 'irrigation_factor', name: t('m_f') },
           { k: 'irrigation_et0_yesterday', name: t('m_et0y') },
         ]),
@@ -628,7 +641,7 @@ function irrigationView(m, t) {
     has(`zone_${n}_end`) && tile(E(`zone_${n}_end`), { name: t('x_end'), visibility: shown(E(`zone_${n}_end`)) }),
     rows(m, [
       { k: `zone_${n}_next_start`, name: t('next'), fmt: 'ts', hide_empty: true },
-      { k: `zone_${n}_manual`, name: t('x_man_open'), fmt: 'open', edit: true },
+      { k: `zone_${n}_manual`, name: t('x_man_open'), fmt: 'open', edit: true, zone: n },
       { k: `zone_${n}_irrigation_factor`, name: t('x_zf') },
     ]),
     { type: 'custom:irry-slot-card', device: dev, zone: n, grid_options: { columns: 'full' } },
@@ -1043,7 +1056,8 @@ class IrryCard extends HTMLElement {
 const BANNER_KEYS = ['zone_active', 'programs_paused', 'rain_skip_active', 'rain_last_24h', 'rain_skip_threshold', 'wind_pause',
   'wind_resume', 'wind_over_threshold', 'time_valid', 'weather_data', 'weather_feed', 'weather_battery',
   'irrigation_overlap_warning', 'firmware_update_status', 'wi_fi_network', 'wi_fi_fallback_active', 'units',
-  'wind_paused_zones', 'wind_waiting_zones', 'wind_skip_at', 'next_sheltered_start', 'next_sheltered_zone', 'problems'];
+  'wind_paused_zones', 'wind_waiting_zones', 'wind_skip_at', 'next_sheltered_start', 'next_sheltered_zone', 'problems',
+  'weather_fallback', 'weather_days_used'];
 function alerts(m, c) {
   const t = c.t, st = m.st, A = [], add = (type, text) => A.push([type, text]);
   const f = (k) => { const s = m.so(k); return s ? fmtState('', s, c) : ''; };
@@ -1084,7 +1098,7 @@ function alerts(m, c) {
   else if (st('time_valid') === 'off') add('error', t('ch_time_bad'));
   const wd = st('weather_data');
   if (wd === 'missing') add('warning', t('x_wd_missing'));
-  if (wd === 'fallback') add('info', t('x_wd_fallback'));
+  if (wd === 'fallback') { const u = wdUsed(m, t); add('info', u ? `${t('m_data')}: ${u}` : t('x_wd_fallback')); }  // x_wd_fallback: before 2.6.1
   const fd = st('weather_feed');
   if (fd === 'unpaired') add('warning', t('x_feed_unpaired'));
   if (fd === 'stale') add('warning', t('x_feed_stale'));
@@ -1118,13 +1132,21 @@ class IrryBannerCard extends IrryCard {
 function rowShown(h, row) { return !row.only || [].concat(row.only.state).includes((h.states[row.only.entity] || {}).state); }
 // Rows: { entity, name, fmt, edit, hide_empty, ref, refs, confirm } or { head }.
 // Read-only rows open the HA more-info dialog; edit rows write with the entity's own service.
+// A toggle keeps the requested state until the entity reports it, at most PEND_MS (as PEND in the device UI).
+const PEND_MS = 10e3;
 class IrryRowsCard extends IrryCard {
   getCardSize() { return 1 + ((this._c && this._c.rows) || []).length; }
+  // Pending toggles: dropped once the entity has the requested state, or after PEND_MS.
+  settle() {
+    const pd = this._pd || {}, now = Date.now();
+    for (const [e, x] of Object.entries(pd)) if (((this._h.states[e] || {}).state === x.v) || now - x.at >= (this._pms || PEND_MS)) delete pd[e];
+    return pd;
+  }
   signature() {
     if (!this._m) return 'none';
-    const h = this._h, ids = [];
+    const h = this._h, ids = [], pd = this.settle();
     for (const r of this._c.rows || []) ids.push(r.entity, r.ref, r.only && r.only.entity, ...(r.refs || []));
-    return JSON.stringify([this._l, this._m.imp, this._m.zones.map(this._m.label),
+    return JSON.stringify([this._l, this._m.imp, this._m.zones.map(this._m.label), this._err || '', pd,
       ids.map((i) => { const s = i && h.states[i]; return s && [s.state, s.attributes.unit_of_measurement]; })]);
   }
   paint() {
@@ -1170,9 +1192,11 @@ class IrryRowsCard extends IrryCard {
   // Writable control for the row, or null (read-only domain).
   control(dom, row, s, i, name) {
     const a = s.attributes, t = this._t, dis = s.state === 'unavailable' ? ' disabled' : '';
-    if (dom === 'switch' || dom === 'input_boolean')
-      return `${row.fmt ? `<span class="v">${esc(fmtState(row.fmt, s, this.ctx(), row))}</span>` : ''}`
-        + `<input class="tg" type="checkbox" data-i="${i}"${s.state === 'on' ? ' checked' : ''}${dis}>`;
+    if (dom === 'switch' || dom === 'input_boolean') {
+      const p = this._pd && this._pd[row.entity], v = p ? { ...s, state: p.v } : s;
+      return `${row.fmt ? `<span class="v">${esc(fmtState(row.fmt, v, this.ctx(), row))}</span>` : ''}`
+        + `<input class="tg" type="checkbox" data-i="${i}"${v.state === 'on' ? ' checked' : ''}${dis}>`;
+    }
     if (dom === 'select') {
       const tx = (x) => (OPT[row.fmt] && OPT[row.fmt][x] ? t(OPT[row.fmt][x]) : x);
       const o = (a.options || []).map((x) => `<option value="${esc(x)}"${x === s.state ? ' selected' : ''}>${esc(tx(x))}</option>`);
@@ -1197,7 +1221,16 @@ class IrryRowsCard extends IrryCard {
     const h = this._h, s = h.states[row.entity], dom = row.entity.split('.')[0], target = { entity_id: row.entity };
     this._err = '';
     try {
-      if (dom === 'switch' || dom === 'input_boolean') await h.callService(dom, el.checked ? 'turn_on' : 'turn_off', {}, target);
+      // Zone N Manual: the zone action (firmware 2.6.1) answers why an opening is refused; the switch does not.
+      const za = row.zone && this._m && this._m.action('zone');
+      if (za || dom === 'switch' || dom === 'input_boolean') {
+        // Requested state shown at once and kept until the entity reports it (or PEND_MS, then the real state).
+        const e = row.entity, at = Date.now();
+        (this._pd = this._pd || {})[e] = { v: el.checked ? 'on' : 'off', at };
+        setTimeout(() => { if (this._pd[e] && this._pd[e].at === at) { this._sig = ''; if (this._h) this.hass = this._h; } }, (this._pms || PEND_MS) + 50);
+      }
+      if (za) await h.callService('esphome', za, { zone: row.zone, on: !!el.checked });
+      else if (dom === 'switch' || dom === 'input_boolean') await h.callService(dom, el.checked ? 'turn_on' : 'turn_off', {}, target);
       else if (dom === 'select') await h.callService('select', 'select_option', { option: el.value }, target);
       else if (dom === 'text') {
         if (row.pat && el.value && !new RegExp(row.pat).test(el.value)) { if (el.classList) el.classList.add('bad'); return; }
@@ -1219,11 +1252,13 @@ class IrryRowsCard extends IrryCard {
       }
     } catch (e) {
       // Refused or invalid: the reason above the rows, and the device value again.
+      if (this._pd) delete this._pd[row.entity];
       this._err = `${row.name || row.entity}: ${errText(this._m, this._t, this._l, e)}`;
     }
     el.blur();
+    // Repaint from the newest hass: the new state may have arrived while the call was running.
     this._sig = '';
-    this.hass = h;
+    this.hass = this._h;
   }
 }
 
@@ -1954,7 +1989,7 @@ class IrryCoefCard extends IrryGetCard {
   signature() {
     const m = this._m;
     if (!m) return 'none';
-    const ks = ['irrigation_method', 'weather_data', 'irrigation_factor', 'irrigation_et0_yesterday', 'units',
+    const ks = ['irrigation_method', 'weather_data', 'weather_days_used', 'weather_fallback', 'irrigation_factor', 'irrigation_et0_yesterday', 'units',
       ...m.zones.flatMap((n) => [`zone_${n}_irrigation_factor`, `zone_${n}_plant_type`, `zone_${n}_sheltered_from_rain`, `zone_${n}_sheltered_from_wind`])];
     return JSON.stringify([this._l, m.imp, this._ver, m.zones.map(m.label), m.zones.map((n) => [1, 2, 3].map((k) => slotFrom(m, n, k).enabled)),
       ks.map((k) => { const s = m.so(k); return s && [s.state, s.attributes.unit_of_measurement]; })]);

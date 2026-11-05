@@ -13,13 +13,13 @@ function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 
       'Weather Rain Today', 'Weather Solar Radiation', 'Weather Temperature', 'Weather UV Index', 'Weather Wind Direction',
       'Weather Wind Gust', 'Weather Wind Speed', 'Wi-Fi Signal', 'Wind Mean 10 min', 'Latitude', 'Longitude', 'Altitude',
       'Weather Soil Moisture 1', 'Weather Soil Moisture 2', 'Weather Soil Moisture 3', 'Weather Soil Moisture 4',
-      'Weather Lightning Distance', 'Weather Lightning Count', 'Weather PM2.5'],
+      'Weather Lightning Distance', 'Weather Lightning Count', 'Weather PM2.5', 'Weather Days Used'],
     switch: ['Aux', 'Programs Paused'],
     text: ['Aux Label', 'Rain Attribute', 'Rain Entity', 'Sequence Order', 'Weather Prefix'],
     text_sensor: ['Firmware Source', 'Firmware Update Status', 'IP Address', 'Irrigation Method', 'Irrigation Overlap Warning',
       'Last Event', 'Next Irrigation', 'Time Source', 'Weather Data', 'Weather Feed', 'Weather Last Update', 'Wi-Fi Network',
       'Wind Pause', 'Wind Resume', 'Zone Active', 'Wind Paused Zones', 'Wind Waiting Zones', 'Wind Skip At', 'Next Sheltered Start',
-      'Next Sheltered Zone', 'Position Source', 'Altitude Source', 'Time Zone', 'RTC', 'Firmware Last Check', 'Problems'],
+      'Next Sheltered Zone', 'Position Source', 'Altitude Source', 'Time Zone', 'RTC', 'Firmware Last Check', 'Problems', 'Weather Fallback'],
     time: [], date: [],
   };
   if (!x8) { names.select.push('Alarm Sound'); names.time.push('Quiet From', 'Quiet To'); names.button.push('Silence Alarm'); }
@@ -95,6 +95,7 @@ function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 
   set('Time Zone', 'Europe/Rome');
   // Firmware 2.6.0: Problems '' = all OK; Zone N Next Start (timestamp) unknown = no start.
   set('Problems', '');
+  set('Weather Fallback', ''); set('Weather Days Used', '3');
   for (let n = 1; n <= zones; n++) set(`Zone ${n} Next Start`, 'unknown');
   if (r8) set('R8 Mode', r8, { options: ['Aux', 'Zone 7'] });
   if (!x8) set('Alarm Sound', 'Quiet Hours', { options: ['Off', 'On', 'Quiet Hours'] });
@@ -105,7 +106,7 @@ function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 
       dev2: { id: 'dev2', name: 'Other', manufacturer: 'Espressif', model: 'x' },
     },
     entities, states,
-    services: { esphome: { it7ws_8dee48_rapid: {}, it7ws_8dee48_set_slot: {}, it7ws_8dee48_get: {}, other_rapid: {} } },
+    services: { esphome: { it7ws_8dee48_rapid: {}, it7ws_8dee48_set_slot: {}, it7ws_8dee48_get: {}, it7ws_8dee48_zone: {}, other_rapid: {} } },
     calls: [], ws: [], getData: {},
     callService(domain, service, data, target) { this.calls.push({ domain, service, data, target }); return this.fail ? Promise.reject(new Error(this.fail)) : Promise.resolve(); },
     // A service with return_response: { context, response: { j } }; getData keys "what/arg" or "what".
