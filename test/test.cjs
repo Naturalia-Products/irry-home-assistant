@@ -11,6 +11,8 @@ global.window = {};
 const path = require('path');
 const { fakeHass } = require('./fake.cjs');
 const lib = require(path.join(__dirname, '..', 'dist', 'irry-the-seven.js'));
+// Shared firmware fixtures: tests/host in the firmware tree, test/fixtures in the exported repository.
+const FIX = require('fs').existsSync(path.join(__dirname, 'fixtures')) ? path.join(__dirname, 'fixtures') : path.join(__dirname, '..', '..', 'tests', 'host');
 let fail = 0, n = 0;
 const ok = (c, msg) => { n++; if (!c) { fail++; console.log('FAIL', msg); } return c; };
 
@@ -465,6 +467,15 @@ function refs(o, out = []) {
       && c2 && c2.domain === 'button' && c2.target.entity_id === mc.E('irrigation_calibrate') && cc.card._msg.text === t('saved'), `cal card writes ${JSON.stringify(hc2.calls)}`);
   }
   {
+    // Calibration card with cal:nodata from the firmware: inert, its reason shown on a press, nothing written.
+    const hc3 = fakeHass(), id = Object.keys(hc3.states).find((k) => k.endsWith('_blocked_controls'));
+    hc3.states[id] = { ...hc3.states[id], state: 'cal:nodata' };
+    const cc = mk(lib.IrryCalCard, {}, hc3);
+    ok(/aria-disabled="true"/.test(cc.html()), 'cal: inert with cal:nodata');
+    await cc.card.cal();
+    ok(!hc3.calls.length && cc.card._msg.text.includes(t('e_nodata')) && cc.card._msg.cls === 'warn', `cal: nodata reason, no call ${JSON.stringify(cc.card._msg)}`);
+  }
+  {
     // Every text key the source names, also through helpers and ternaries, is in the built I18N: a string literal that is
     // a key of the text sources must be inlined. The literals below are state, attribute or unit values, not texts.
     const fs = require('fs'), rd = (f) => (fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : {});
@@ -778,7 +789,7 @@ function refs(o, out = []) {
     const btn = (k) => (z.html().match(new RegExp(`<button[^>]*data-i="${zr.rows.findIndex((r) => r.entity && r.entity.endsWith(k))}"[^>]*>`)) || [''])[0];
     ok(/^<div class="rows"><div class="msg top"/.test(z.html().replace(/^[\s\S]*?<ha-card>(<h1[^]*?<\/h1>)?/, '')), 'zones: message line above the rows');
     ok(/disabled/.test(btn('close_all_zone_valves')) && !zr.rows.some((r) => /ignore_wind$/.test(r.entity || '')), 'zones: Close all inactive with nothing open, no Ignore Wind');
-    let hh = put(put(h0, 'Zone Active', 'Zona 1'), 'Wind Pause', 'paused'); z.card.hass = hh;
+    let hh = put(put(put(h0, 'Zone Active', 'Zona 1'), 'Wind Pause', 'paused'), 'Blocked Controls', 'aux:aux_sync,silence:none'); z.card.hass = hh;
     ok(!/disabled/.test(btn('close_all_zone_valves')), 'zones: Close all active with a zone open');
     ok(z.html().includes(`${t('now_run')}: Zona 1`) && z.html().includes(t('wp')), 'zones: running zone and wind pause in the message line');
     hh = put(hh, 'Programs Paused', 'on'); z.card.hass = hh;
@@ -796,7 +807,7 @@ function refs(o, out = []) {
     const wc = cardOf(cards, 'ignore_wind'), w = mk(lib.IrryRowsCard, wc, h0);
     ok(wc && !wc.irr && wc.rows.some((r) => /wind_pause$/.test(r.entity || '')), 'ignore wind: in the rain and wind card');
     ok(/disabled/.test(ctl(w, wc, 'ignore_wind')) && /<div class="msg" data-k=""/.test(w.html()), 'ignore wind: inert, message line reserved');
-    let hh = put(h0, 'Wind Pause', 'waiting'); w.card.hass = hh;
+    let hh = put(put(h0, 'Wind Pause', 'waiting'), 'Blocked Controls', 'aux:aux_sync,silence:none,closeall:none'); w.card.hass = hh;
     ok(!/disabled/.test(ctl(w, wc, 'ignore_wind')), 'ignore wind: active while waiting');
     w.card._ems = 30;
     await w.card.write(wc.rows.find((r) => /ignore_wind$/.test(r.entity || '')), EL);
@@ -805,22 +816,20 @@ function refs(o, out = []) {
     ok(!w.html().includes(t('wind_ignd')), 'ignore wind: answer gone after the timeout');
     // No control left as a tile with an action other than history (a tile cannot be inert).
     ok(!cards.some((c) => c.type === 'tile' && /aux$|find_device|silence_alarm/.test(c.entity)), 'status: Aux, Find, Silence not tiles');
-    // Aux: inert in Sync mode and during an install, active otherwise.
+    // Aux: inert as the firmware says (Sync, an install), active otherwise.
     const ac = cardOf(cards, 'switch\\..*_aux'), a = mk(lib.IrryRowsCard, ac, h0), cnt = h0.calls.length;
     ok(/disabled/.test(ctl(a, ac, '_aux')), 'aux: inert in Sync mode');
     await a.card.write(ac.rows.find((r) => /_aux$/.test(r.entity)), { ...EL, checked: true });
     ok(h0.calls.length === cnt, 'aux: no call while inert');
-    hh = put(h0, 'Aux Mode', 'On'); a.card.hass = hh;
+    hh = put(put(h0, 'Aux Mode', 'On'), 'Blocked Controls', 'silence:none,closeall:none,windign:nowind'); a.card.hass = hh;
     ok(!/disabled/.test(ctl(a, ac, '_aux')), 'aux: active in On mode');
-    a.card.hass = put(hh, 'Firmware Update Status', 'installing');
+    a.card.hass = put(hh, 'Blocked Controls', 'aux:aux_ota');
     ok(/disabled/.test(ctl(a, ac, '_aux')), 'aux: inert during an install');
-    // Silence Alarm: inert with the time valid or the buzzer off.
-    a.card.hass = put(h0, 'Time Valid', 'on');
-    ok(/disabled/.test(ctl(a, ac, 'silence_alarm')), 'silence: inert with the time valid');
+    // Silence Alarm: inert while nothing sounds (silence:none), active while an alarm sounds; the HA states alone decide nothing.
     a.card.hass = put(put(h0, 'Time Valid', 'off'), 'Alarm Sound', 'On');
-    ok(!/disabled/.test(ctl(a, ac, 'silence_alarm')), 'silence: active with an alarm possible');
-    a.card.hass = put(put(h0, 'Time Valid', 'off'), 'Alarm Sound', 'Off');
-    ok(/disabled/.test(ctl(a, ac, 'silence_alarm')), 'silence: inert with the buzzer off');
+    ok(/disabled/.test(ctl(a, ac, 'silence_alarm')), 'silence: inert while the firmware says none');
+    a.card.hass = put(put(h0, 'Time Valid', 'on'), 'Blocked Controls', 'aux:aux_sync');
+    ok(!/disabled/.test(ctl(a, ac, 'silence_alarm')), 'silence: active while an alarm sounds');
     // Full-width buttons in Stato: Valve Power, Aux, Pause programs one per line, state on the button.
     const wk = ac.rows.filter((r) => r.wide).map((r) => r.entity.replace(/^.*_8dee48_/, ''));
     ok(['aux', 'programs_paused', 'silence_alarm'].every((k, i) => wk[i] === k) && wk.length === 3, `status: full-width aux, pause, silence ${wk}`);
@@ -835,27 +844,30 @@ function refs(o, out = []) {
       ok(new RegExp(`<div class="r tap" data-more="${id}"><ha-icon class="ic${st === 'on' ? ' on' : ''}" icon="${ic}"></ha-icon><span class="n">${t('vp')}</span><span class="v">${txt}</span>`).test(vh)
         && !new RegExp(`<button[^>]*${id}`).test(vh), `valve power ${st}: icon, ${txt}, tap = history`);
     }
-    // Find Device in Diagnostics: answer and inert for the command time, then active again.
+    // Find Device in Diagnostics: answer after the press, kept while the firmware says it runs (find:on), never inert.
     const stv = await reg['ll-strategy-view-irry-settings'].generate({}, h0), sall = [];
     (function walk(o) { if (o && typeof o === 'object') { if (o.type === 'custom:irry-rows-card') sall.push(o); Object.values(o).forEach(walk); } })(JSON.parse(JSON.stringify(stv)));
     ok(!cardOf(cards, 'find_device') && sall.filter((c) => cardOf([c], 'find_device')).length === 1 && cardOf(sall, 'find_device').rows.some((r) => /time_source$/.test(r.entity || '')), 'find: only in Diagnostics');
-    const fdc = cardOf(sall, 'find_device'), fd = mk(lib.IrryRowsCard, fdc, h0); fd.card._hms = 60;
+    const fdc = cardOf(sall, 'find_device'), fd = mk(lib.IrryRowsCard, fdc, h0); fd.card._ems = 40;
     ok(/class="w on"/.test(ctl(fd, fdc, "find_device")) && !/disabled/.test(ctl(fd, fdc, "find_device")), "find: full width, active (filled)");
     await fd.card.write(fdc.rows.find((r) => /find_device$/.test(r.entity)), EL);
-    ok(fd.html().includes(t('find_ok')) && /data-k="ok"/.test(fd.html()) && /disabled/.test(ctl(fd, fdc, 'find_device')), 'find: answer, inert while running');
-    await new Promise((r) => setTimeout(r, 120));
-    ok(!fd.html().includes(t('find_ok')) && !/disabled/.test(ctl(fd, fdc, 'find_device')), 'find: active again at the end');
+    ok(fd.html().includes(t('find_ok')) && /data-k="ok"/.test(fd.html()) && !/disabled/.test(ctl(fd, fdc, 'find_device')), 'find: answer, a press restarts it');
+    fd.card.hass = put(h0, 'Blocked Controls', 'find:on');
+    await new Promise((r) => setTimeout(r, 90));
+    ok(fd.html().includes(t('find_ok')) && !/disabled/.test(ctl(fd, fdc, 'find_device')), 'find: answer kept while find:on');
+    fd.card.hass = h0;
+    ok(!fd.html().includes(t('find_ok')) && !/disabled/.test(ctl(fd, fdc, 'find_device')), 'find: answer gone at the end');
     // Close all and Ignore Wind: full width, same style.
     ok(cards.find((c) => c.irr).rows.find((r) => /close_all/.test(r.entity || '')).wide && wc.rows.find((r) => /ignore_wind/.test(r.entity || '')).wide, 'close all, ignore wind: full width');
     // An inert full-width switch still has the long press (aria-disabled, not disabled).
     a.card.hass = h0;
     ok(/aria-disabled="true"/.test(ctl(a, ac, '_aux')) && /data-lp=/.test(ctl(a, ac, '_aux')), 'aux: inert, history still reachable');
-    // Zones: opening inert with MAXO zones open or during an install; closing always possible.
+    // Zones: opening inert while the firmware says (open_limit, ota_pv); closing always possible.
     const zc = cards.find((c) => c.irr);
-    let h3 = h0; for (const n of [1, 2, 3]) h3 = put(h3, `Zone ${n} Manual`, 'on');
+    let h3 = put(h0, 'Blocked Controls', 'zone:open_limit'); for (const n of [1, 2, 3]) h3 = put(h3, `Zone ${n} Manual`, 'on');
     const z = mk(lib.IrryRowsCard, zc, h3);
     ok(/disabled/.test(ctl(z, zc, 'zone_4_manual')) && !/disabled/.test(ctl(z, zc, 'zone_1_manual')), 'zones: 4th opening inert, closing active');
-    z.card.hass = put(h0, 'Firmware Update Status', 'verifying');
+    z.card.hass = put(h0, 'Blocked Controls', 'zone:ota_pv');
     ok(/disabled/.test(ctl(z, zc, 'zone_1_manual')), 'zones: opening inert while verifying');
     z.card.hass = h0;
     ok(!/disabled/.test(ctl(z, zc, 'zone_1_manual')), 'zones: opening active otherwise');
@@ -864,21 +876,19 @@ function refs(o, out = []) {
     const sc = JSON.parse(JSON.stringify(st)), all = []; (function walk(o) { if (o && typeof o === 'object') { if (o.type === 'custom:irry-rows-card') all.push(o); Object.values(o).forEach(walk); } })(sc);
     const fc = cardOf(all, 'firmware_check'), f = mk(lib.IrryRowsCard, fc, h0);
     const soon = new Date(Date.now() + 3600e3).toISOString();
-    let hf = put(put(put(h0, 'Firmware Update Mode', 'Notify'), 'Next Irrigation', soon), 'Zone Active', '-'); f.card.hass = put(hf, 'Wind Pause', 'off');
+    let hf = put(h0, 'Blocked Controls', ''); f.card.hass = hf;
     ok(!/disabled/.test(ctl(f, fc, 'firmware_check')) && !/disabled/.test(ctl(f, fc, 'firmware_install')), 'fw: check and install active');
-    f.card.hass = put(hf, 'Firmware Update Mode', 'Off');
-    ok(/disabled/.test(ctl(f, fc, 'firmware_check')), 'fw: check inert with updates off');
-    f.card.hass = put(hf, 'Firmware Update Status', 'checking');
-    ok(/disabled/.test(ctl(f, fc, 'firmware_check')), 'fw: check inert while checking');
-    hf = put(hf, 'Wind Pause', 'off');
-    for (const [nmx, v, why] of [['Zone Active', 'Zona 1', 'a zone open'], ['Wind Pause', 'paused', 'a wind pause'],
-      ['Next Irrigation', new Date(Date.now() + 300e3).toISOString(), 'a start in 5 min'], ['Firmware Update Status', '2.4.1 available (manual)', 'a manual version']]) {
-      f.card.hass = put(hf, nmx, v);
-      ok(/disabled/.test(ctl(f, fc, 'firmware_install')), `fw: install inert with ${why}`);
+    for (const c of ['fw_off', 'fw_busy', 'ota_busy', 'fw_mem']) {
+      f.card.hass = put(hf, 'Blocked Controls', `fwchk:${c}`);
+      ok(/disabled/.test(ctl(f, fc, 'firmware_check')) && !/disabled/.test(ctl(f, fc, 'firmware_install')), `fw: check inert with ${c}`);
+    }
+    for (const c of ['ota_factory', 'fw_busy', 'ota_busy', 'fw_rejected', 'fw_force', 'fw_window']) {
+      f.card.hass = put(hf, 'Blocked Controls', `fwinst:${c}`);
+      ok(/disabled/.test(ctl(f, fc, 'firmware_install')) && !/disabled/.test(ctl(f, fc, 'firmware_check')), `fw: install inert with ${c}`);
     }
     // Find Device: same answer, no static note.
     const dc = cardOf(all, 'find_device');
-    ok(dc.rows.find((r) => /find_device$/.test(r.entity)).hold === 10e3 && !all.some((c) => c.rows.some((r) => r.note === t('find_ok'))), 'settings: Find Device with answer, no note');
+    ok(dc.rows.find((r) => /find_device$/.test(r.entity)).ctl.c === 'find' && !all.some((c) => c.rows.some((r) => r.note === t('find_ok'))), 'settings: Find Device with answer, no note');
   }
   // ---- 0.4.6: every control of the rows cards, state by state: style, command sent or not, message, history
   {
@@ -889,46 +899,50 @@ function refs(o, out = []) {
     const walk = (o, out = []) => { if (o && typeof o === 'object') { if (o.type === 'custom:irry-rows-card') out.push(o); Object.values(o).forEach((x) => walk(x, out)); } return out; };
     const cardsOf = async (v, hh) => walk(JSON.parse(JSON.stringify(await reg[`ll-strategy-view-irry-${v}`].generate({}, hh))));
     const later = new Date(Date.now() + 3600e3).toISOString(), soon = new Date(Date.now() + 300e3).toISOString();
-    const base = [['Firmware Update Mode', 'Notify'], ['Next Irrigation', later], ['Wind Pause', 'off'], ['Zone Active', '-'], ['Time Valid', 'off'], ['Alarm Sound', 'On'], ['Aux Mode', 'On']];
-    const z3 = [['Zone 1 Manual', 'on'], ['Zone 2 Manual', 'on'], ['Zone 3 Manual', 'on'], ['Zone Active', 'Zona 1']];
+    // Blocked Controls (BC) alone makes a control inert: the other states are left as they are.
+    const base = [['Aux Mode', 'On'], ['Blocked Controls', '']], BC = (v) => ['Blocked Controls', v];
+    const z3 = [['Zone 1 Manual', 'on'], ['Zone 2 Manual', 'on'], ['Zone 3 Manual', 'on'], ['Zone Active', 'Zona 1'], BC('zone:open_limit')];
     // [view, entity suffix, label, states, expected]: on/off = active (filled / grey), inert = outlined with the reason
     // (why) on a tap and no command; ro = read-only, tap = history.
     const C = [
       ['status', '_aux', 'aux off', [['Aux', 'off']], { on: false }],
       ['status', '_aux', 'aux on', [['Aux', 'on']], { on: true }],
-      ['status', '_aux', 'aux Sync', [['Aux Mode', 'Sync']], { why: t('x_why_sync') }],
-      ['status', '_aux', 'aux Sync on', [['Aux Mode', 'Sync'], ['Aux', 'on']], { why: t('x_why_sync'), on: true }],
-      ['status', '_aux', 'aux installing', [['Firmware Update Status', 'installing']], { why: t('x_why_fw') }],
+      ['status', '_aux', 'aux Sync', [['Aux Mode', 'Sync'], BC('aux:aux_sync')], { why: t('e_aux_sync') }],
+      ['status', '_aux', 'aux Sync on', [['Aux Mode', 'Sync'], ['Aux', 'on'], BC('aux:aux_sync')], { why: t('e_aux_sync'), on: true }],
+      ['status', '_aux', 'aux installing', [BC('aux:aux_ota')], { why: t('e_aux_ota') }],
+      ['status', '_aux', 'aux, R8 a zone', [BC('aux:aux_zone')], { why: t('e_aux_zone') }],
       ['status', 'programs_paused', 'pause off', [['Programs Paused', 'off']], { on: false }],
       ['status', 'programs_paused', 'pause on', [['Programs Paused', 'on']], { on: true }],
       ['status', 'silence_alarm', 'silence active', [], { on: true }],
-      ['status', 'silence_alarm', 'silence, time valid', [['Time Valid', 'on']], { why: t('x_why_noalarm') }],
-      ['status', 'silence_alarm', 'silence, buzzer off', [['Alarm Sound', 'Off']], { why: t('x_why_buzoff') }],
+      ['status', 'silence_alarm', 'silence, nothing sounding', [BC('silence:none')], { why: t('x_why_noalarm') }],
       ['status', 'zone_1_manual', 'zone closed', [], { tg: true, on: false }],
       ['status', 'zone_1_manual', 'zone open', [['Zone 1 Manual', 'on']], { tg: true, on: true }],
       ['status', 'zone_4_manual', 'zone, 3 open', z3, { tg: true, why: t('e_open_limit') }],
       ['status', 'zone_1_manual', 'zone open, 3 open (closing)', z3, { tg: true, on: true }],
-      ['status', 'zone_1_manual', 'zone, installing', [['Firmware Update Status', 'installing']], { tg: true, why: t('x_why_fw') }],
-      ['status', 'zone_1_manual', 'zone, verifying', [['Firmware Update Status', 'verifying']], { tg: true, why: t('x_why_fw') }],
-      ['status', 'close_all_zone_valves', 'close all, none open', [], { why: t('x_why_nozone') }],
+      ['status', 'zone_1_manual', 'zone, verifying', [BC('zone:ota_pv')], { tg: true, why: t('e_ota_pv') }],
+      ['status', 'zone_1_manual', 'zone open, verifying (closing)', [['Zone 1 Manual', 'on'], BC('zone:ota_pv')], { tg: true, on: true }],
+      ['status', 'close_all_zone_valves', 'close all, none open', [BC('closeall:none')], { why: t('x_why_nozone') }],
       ['status', 'close_all_zone_valves', 'close all, a zone open', [['Zone Active', 'Zona 1']], { on: true }],
-      ['status', 'ignore_wind', 'ignore wind, no pause', [], { why: t('x_why_nowind') }],
+      ['status', 'ignore_wind', 'ignore wind, no pause', [BC('windign:nowind')], { why: t('e_nowind') }],
       ['status', 'ignore_wind', 'ignore wind, waiting', [['Wind Pause', 'waiting']], { on: true, ok: t('wind_ignd') }],
       ['status', 'ignore_wind', 'ignore wind, paused', [['Wind Pause', 'paused']], { on: true, ok: t('wind_ignd') }],
       ['irrigation', 'zone_4_manual', 'irrigation zone, 3 open', z3, { tg: true, why: t('e_open_limit') }],
       ['irrigation', 'zone_1_manual', 'irrigation zone closed', [], { tg: true, on: false }],
-      ['irrigation', 'zone_1_manual', 'irrigation zone, verifying', [['Firmware Update Status', 'verifying']], { tg: true, why: t('x_why_fw') }],
+      ['irrigation', 'zone_1_manual', 'irrigation zone, verifying', [BC('zone:ota_pv')], { tg: true, why: t('e_ota_pv') }],
       ['settings', 'firmware_check', 'fw check active', [], { sm: true }],
-      ['settings', 'firmware_check', 'fw check, updates off', [['Firmware Update Mode', 'Off']], { sm: true, why: t('x_why_fwoff') }],
-      ['settings', 'firmware_check', 'fw check, checking', [['Firmware Update Status', 'checking']], { sm: true, why: t('x_why_fwrun') }],
+      ['settings', 'firmware_check', 'fw check, updates off', [BC('fwchk:fw_off')], { sm: true, why: t('e_fw_off') }],
+      ['settings', 'firmware_check', 'fw check, busy', [BC('fwchk:fw_busy')], { sm: true, why: t('e_fw_busy') }],
+      ['settings', 'firmware_check', 'fw check, update pending', [BC('fwchk:ota_busy')], { sm: true, why: t('e_ota_busy') }],
+      ['settings', 'firmware_check', 'fw check, low memory', [BC('fwchk:fw_mem')], { sm: true, why: t('e_fw_mem') }],
       ['settings', 'firmware_install', 'fw install active', [], { sm: true }],
-      ['settings', 'firmware_install', 'fw install, manual', [['Firmware Update Status', '2.4.1 available (manual)']], { sm: true, why: t('x_why_manual') }],
-      ['settings', 'firmware_install', 'fw install, zone open', [['Zone Active', 'Zona 1']], { sm: true, why: t('e_fw_window') }],
-      ['settings', 'firmware_install', 'fw install, wind pause', [['Wind Pause', 'paused']], { sm: true, why: t('e_fw_window') }],
-      ['settings', 'firmware_install', 'fw install, start in 5 min', [['Next Irrigation', soon]], { sm: true, why: t('e_fw_window') }],
+      ['settings', 'firmware_install', 'fw install, to confirm in the app', [['Firmware Update Status', '2.4.1 available (manual)'], BC('fwinst:fw_force')], { sm: true, why: t('e_fw_force') }],
+      ['settings', 'firmware_install', 'fw install, window', [BC('fwinst:fw_window')], { sm: true, why: t('e_fw_window') }],
+      ['settings', 'firmware_install', 'fw install, discarded', [BC('fwinst:fw_rejected')], { sm: true, why: t('e_fw_rejected') }],
+      ['settings', 'firmware_install', 'fw install, before setup', [BC('fwinst:ota_factory')], { sm: true, why: t('e_ota_factory') }],
       ['settings', 'restart', 'restart', [], { sm: true }],
       ['settings', 'find_device', 'find active', [], { on: true, ok: t('find_ok') }],
-      ['settings', 'silence_alarm', 'settings silence, time valid', [['Time Valid', 'on']], { sm: true, why: t('x_why_noalarm') }],
+      ['settings', 'find_device', 'find running (a press restarts it)', [BC('find:on')], { on: true, ok: t('find_ok') }],
+      ['settings', 'silence_alarm', 'settings silence, nothing sounding', [BC('silence:none')], { sm: true, why: t('x_why_noalarm') }],
       ['settings', 'silence_alarm', 'settings silence active', [], { sm: true }],
       ['settings', 'zone_1_sheltered_from_rain', 'shelter toggle', [], { tg: true, on: false }],
     ];
@@ -936,7 +950,7 @@ function refs(o, out = []) {
       const hh = puts(puts(fakeHass(), base), kv), cfg = (await cardsOf(v, hh)).find((c) => c.rows.some((r) => (r.entity || '').endsWith(k)));
       if (!ok(cfg, `${lb}: card found`)) continue;
       const i = cfg.rows.findIndex((r) => (r.entity || '').endsWith(k)), row = cfg.rows[i], c = mk(lib.IrryRowsCard, cfg, hh);
-      c.card._ems = 40; c.card._hms = 40;
+      c.card._ems = 40;
       const tag = (c.html().match(new RegExp(`<(?:button|input)[^>]*data-(?:i|more)="${x.ro ? row.entity.replace(/\./g, '\\.') : i}"[^>]*>`)) || [''])[0];
       const inert = /aria-disabled="true"/.test(tag);
       // Style: inert = aria-disabled (outlined, readable), never the real disabled (no tap, no reason); a wide control
@@ -953,6 +967,7 @@ function refs(o, out = []) {
       const n0 = hh.calls.length, sw = /^switch\./.test(row.entity), s0 = hh.states[row.entity].state;
       await c.card.write(row, { blur() {}, classList: { add() {} }, checked: sw ? s0 !== 'on' : undefined, value: '' });
       const msg = (c.html().match(/<div class="msg[^"]*" data-k="(\w*)"[^>]*>([^<]*)</) || []).slice(1);
+      if (msg[1]) msg[1] = msg[1].replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
       if (x.why) {
         ok(hh.calls.length === n0 && msg[0] === 'warn' && msg[1].includes(x.why), `${lb}: tap = reason, no command (${msg[1]})`);
         if (row.wide && sw) ok(msg[1].includes(t('x_why_hist')), `${lb}: the reason says where the history is`);
@@ -975,6 +990,51 @@ function refs(o, out = []) {
     const css = lib.IrryRowsCard && String(Object.getOwnPropertyDescriptor(lib.IrryRowsCard.prototype, 'paint').value);
     ok(css && !require('fs').readFileSync(path.join(__dirname, '..', 'dist', 'irry-the-seven.js'), 'utf8').includes('--blue-color'), 'theme: no blue other than the primary colour');
     ok(!/aria-disabled=true\]\{opacity/.test(require('fs').readFileSync(path.join(__dirname, '..', 'dist', 'irry-the-seven.js'), 'utf8')), 'theme: inert not by transparency');
+  }
+  {
+    // Shared fixtures of the firmware (tests/host, also run on it7:: by test_plan_cases.cpp and on the web UI by
+    // tools/mock_check.js): runs (days modes) and ovDay (overlap windows), the strategy's own copies.
+    const fs = require('fs'), host = FIX;
+    const rj = JSON.parse(fs.readFileSync(path.join(host, 'runs_cases.json'), 'utf8'));
+    const slot = ([dm, N, a, mask]) => ({ dm, n: N, a, m: [0, 1, 2, 3, 4, 5, 6].map((i) => (mask >> i) & 1) });
+    for (const k of rj.cases) ok(!!lib.runs(slot(k.r), k.dn) === !!k.run, `runs ${k.id}: ${k.desc}`);
+    const oj = JSON.parse(fs.readFileSync(path.join(host, 'ov_cases.json'), 'utf8'));
+    for (const k of oj.cases) {
+      // Device slots: [start, dur, enabled, mask, mode, N, From]; rows not listed are off.
+      const Z = Array.from({ length: oj.nz }, () => ({ s: [0, 1, 2].map(() => ({ t: 0, d: 10, e: 0, ...slot([0, 2, 0, 127]) })) }));
+      for (const [sl, z, [t, d, e, mask, dm, N, a]] of k.prog) Z[z - 1].s[sl - 1] = { t, d, e, ...slot([dm, N, a, mask]) };
+      // Scan from now as it7::max_open: today's ended windows left out, nw = starts within the next 7 x 24 h.
+      let win = null, max = 0, nw = 0;
+      for (let o = 0; o <= 7; o++) {
+        for (const w of lib.ovDay(Z, oj.today + o)) {
+          if (o === 0 && w.b <= k.now) continue;
+          if (o === 7 && w.a >= k.now) continue;
+          nw++; max = Math.max(max, w.zs.length);
+          if (!win && w.zs.length > k.lim) win = { o, a: w.a, b: w.b, z: w.zs.map((z) => z + 1) };
+        }
+      }
+      ok(JSON.stringify(win) === JSON.stringify(k.win) && max === k.max && nw === k.nw,
+        `ovDay ${k.id}: ${k.desc} (expected ${JSON.stringify(k.win)} max ${k.max} nw ${k.nw}, got ${JSON.stringify(win)} max ${max} nw ${nw})`);
+    }
+  }
+  {
+    // Blocked Controls parity (tests/host/ctl_cases.json, the firmware's own cases): the list parses in the fixed control
+    // order and back, and every code has its text in each language; find:on is not a reason (a press restarts it).
+    const fs = require('fs'), cj = JSON.parse(fs.readFileSync(path.join(FIX, 'ctl_cases.json'), 'utf8'));
+    const ORD = ['zone', 'aux', 'silence', 'closeall', 'windign', 'fwchk', 'fwinst', 'cal', 'find'];
+    ok(JSON.stringify(lib.ctlList('')) === '{}' && JSON.stringify(lib.ctlList('unavailable')) === '{}', 'ctl: empty and unavailable lists');
+    const langs = ['en', 'it', 'de', 'fr', 'es', 'pt'].map((l) => [l, lib.tr(l)]);
+    for (const k of cj.cases) {
+      const o = lib.ctlList(k.list), ks = Object.keys(o);
+      ok(ks.every((c, i) => ORD.indexOf(c) >= 0 && (!i || ORD.indexOf(ks[i - 1]) < ORD.indexOf(c)))
+        && ks.map((c) => `${c}:${o[c]}`).join(',') === k.list, `ctl ${k.id}: ${k.desc} (${k.list})`);
+      for (const c of ks) {
+        for (const [l, tl] of langs) {
+          const w = lib.ctlWhy(tl, c, lib.ctlCode(k.list, c));
+          ok(o[c] === 'on' ? w === '' : !!w && w !== o[c] && !/^[a-z]+_[a-z_]+$/.test(w), `ctl ${k.id} ${c}:${o[c]} ${l}: ${w}`);
+        }
+      }
+    }
   }
   console.log(`test.cjs: ${n} checks, ${fail} failed`);
   process.exit(fail ? 1 : 0);

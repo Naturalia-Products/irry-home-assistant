@@ -55,6 +55,9 @@ def main():
             (to / f).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(HA / f, to / f)
         shutil.copy(UI / 'LICENSE', to / 'LICENSE')
+        (to / 'test' / 'fixtures').mkdir(exist_ok=True)
+        for f in ('runs_cases.json', 'ov_cases.json', 'ctl_cases.json'):
+            shutil.copy(HA.parent / 'tests' / 'host' / f, to / 'test' / 'fixtures' / f)
         (to / 'i18n.json').write_text(dump(out))
         print(f'exported to {to}')
 

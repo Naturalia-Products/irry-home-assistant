@@ -1,0 +1,161 @@
+{
+ "about": "Control rule cases (spec §8.4): inputs of it7::ctl_why (src/haparcore.h CtlIn, missing = false, fwinst = the fw_block code or none) and the HA Blocked Controls text expected (status ac = the same pairs). Run by tests/host/test_plan_cases.cpp and tools/mock_check.js (ui-proto/mock.js ctlRule).",
+ "cases": [
+  {
+   "id": "CT-01",
+   "desc": "everything allowed",
+   "in": {
+    "sound": 1,
+    "zones": 1,
+    "wind": 1,
+    "mem": 1,
+    "cal": 1
+   },
+   "list": ""
+  },
+  {
+   "id": "CT-02",
+   "desc": "idle: nothing sounding, no zone, no wind, no fw, no weather day",
+   "in": {
+    "mem": 1,
+    "fwinst": "fw_none"
+   },
+   "list": "silence:none,closeall:none,windign:nowind,fwinst:fw_none,cal:nodata"
+  },
+  {
+   "id": "CT-03",
+   "desc": "all inputs false",
+   "in": {},
+   "list": "silence:none,closeall:none,windign:nowind,fwchk:fw_mem,cal:nodata"
+  },
+  {
+   "id": "CT-04",
+   "desc": "update pending verify: zone ota_pv before open_limit, fwchk ota_busy",
+   "in": {
+    "sound": 1,
+    "zones": 1,
+    "wind": 1,
+    "mem": 1,
+    "cal": 1,
+    "ota_z": 1,
+    "full": 1,
+    "fw_pend": 1
+   },
+   "list": "zone:ota_pv,fwchk:ota_busy"
+  },
+  {
+   "id": "CT-05",
+   "desc": "zone limit reached",
+   "in": {
+    "sound": 1,
+    "zones": 1,
+    "wind": 1,
+    "mem": 1,
+    "cal": 1,
+    "full": 1
+   },
+   "list": "zone:open_limit"
+  },
+  {
+   "id": "CT-06",
+   "desc": "R8 as a zone wins over sync and OTA",
+   "in": {
+    "sound": 1,
+    "zones": 1,
+    "wind": 1,
+    "mem": 1,
+    "cal": 1,
+    "aux_zone": 1,
+    "aux_sync": 1,
+    "ota": 1
+   },
+   "list": "aux:aux_zone"
+  },
+  {
+   "id": "CT-07",
+   "desc": "Aux in Sync wins over OTA",
+   "in": {
+    "sound": 1,
+    "zones": 1,
+    "wind": 1,
+    "mem": 1,
+    "cal": 1,
+    "aux_sync": 1,
+    "ota": 1
+   },
+   "list": "aux:aux_sync"
+  },
+  {
+   "id": "CT-08",
+   "desc": "OTA running: aux, zone, fwchk, fwinst",
+   "in": {
+    "sound": 1,
+    "zones": 1,
+    "wind": 1,
+    "mem": 1,
+    "cal": 1,
+    "ota": 1,
+    "ota_z": 1,
+    "fw_pend": 1,
+    "fwinst": "ota_busy"
+   },
+   "list": "zone:ota_pv,aux:aux_ota,fwchk:ota_busy,fwinst:ota_busy"
+  },
+  {
+   "id": "CT-09",
+   "desc": "fw off wins over busy, pending and memory",
+   "in": {
+    "sound": 1,
+    "zones": 1,
+    "wind": 1,
+    "mem": 0,
+    "cal": 1,
+    "fw_off": 1,
+    "fw_busy": 1,
+    "fw_pend": 1
+   },
+   "list": "fwchk:fw_off"
+  },
+  {
+   "id": "CT-10",
+   "desc": "fw busy wins over pending and memory",
+   "in": {
+    "sound": 1,
+    "zones": 1,
+    "wind": 1,
+    "mem": 0,
+    "cal": 1,
+    "fw_busy": 1,
+    "fw_pend": 1,
+    "fwinst": "fw_busy"
+   },
+   "list": "fwchk:fw_busy,fwinst:fw_busy"
+  },
+  {
+   "id": "CT-11",
+   "desc": "low heap",
+   "in": {
+    "sound": 1,
+    "zones": 1,
+    "wind": 1,
+    "mem": 0,
+    "cal": 1
+   },
+   "list": "fwchk:fw_mem"
+  },
+  {
+   "id": "CT-12",
+   "desc": "install window and Find running",
+   "in": {
+    "sound": 1,
+    "zones": 1,
+    "wind": 1,
+    "mem": 1,
+    "cal": 1,
+    "fwinst": "fw_window",
+    "find": 1
+   },
+   "list": "fwinst:fw_window,find:on"
+  }
+ ]
+}

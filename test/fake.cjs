@@ -19,7 +19,7 @@ function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 
     text_sensor: ['Firmware Source', 'Firmware Update Status', 'IP Address', 'Irrigation Method', 'Irrigation Overlap Warning',
       'Last Event', 'Next Irrigation', 'Time Source', 'Weather Data', 'Weather Feed', 'Weather Last Update', 'Wi-Fi Network',
       'Wind Pause', 'Wind Resume', 'Zone Active', 'Wind Paused Zones', 'Wind Waiting Zones', 'Wind Skip At', 'Next Sheltered Start',
-      'Next Sheltered Zone', 'Position Source', 'Altitude Source', 'Time Zone', 'RTC', 'Firmware Last Check', 'Problems', 'Weather Fallback'],
+      'Next Sheltered Zone', 'Blocked Controls', 'Position Source', 'Altitude Source', 'Time Zone', 'RTC', 'Firmware Last Check', 'Problems', 'Weather Fallback'],
     time: [], date: [],
   };
   if (!x8) { names.select.push('Alarm Sound'); names.time.push('Quiet From', 'Quiet To'); names.button.push('Silence Alarm'); }
@@ -95,6 +95,8 @@ function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 
   set('Time Zone', 'Europe/Rome');
   // Firmware 2.6.0: Problems '' = all OK; Zone N Next Start (timestamp) unknown = no start.
   set('Problems', '');
+  // Firmware 2.7.0: the control rules of these states (Aux in Sync, nothing sounding, no zone, no wind pause).
+  set('Blocked Controls', 'aux:aux_sync,silence:none,closeall:none,windign:nowind');
   set('Weather Fallback', ''); set('Weather Days Used', '3');
   for (let n = 1; n <= zones; n++) set(`Zone ${n} Next Start`, 'unknown');
   if (r8) set('R8 Mode', r8, { options: ['Aux', 'Zone 7'] });

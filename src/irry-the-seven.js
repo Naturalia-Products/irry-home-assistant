@@ -12,7 +12,7 @@
 // Units: the device "Units" select (Auto = from the time zone), as in the device UI; HA sensor values
 // are converted from whatever unit HA shows them in. Graphs keep the HA unit.
 
-const IRRY_VERSION = '0.4.7';
+const IRRY_VERSION = '0.5.0';
 const I18N = /*I18N*/ {} /*END*/;
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -534,22 +534,13 @@ const noDevice = (t) => ({
 // Rows card: name in the device words, value translated and in the device units (edit: writable control).
 // Rows of entities the device does not have are dropped, and so is a heading with no row after it.
 // { note } is a text line, { name, value } a fixed value; only: { k, state } shows the row while that entity has that state
-// (a list: one of them; no state: while it exists). off: the conditions (one or a list, see offHit) that make the
-// control inert, entities the device lacks dropped.
+// (a list: one of them; no state: while it exists). ctl: the firmware control whose Blocked Controls code makes the
+// control inert (see ctlWhy); dropped when the device has no Blocked Controls.
 function rows(m, list, x = {}) {
   const r = list.filter((e) => e && (!e.only || m.E(e.only.k)) && (e.head || e.note || e.value || m.E(e.k))).map((e) => {
     const o = e.head || e.note || e.value ? { ...e } : { ...e, entity: m.E(e.k) };
     if (o.only) o.only = o.only.state === undefined ? undefined : { entity: m.E(e.only.k), state: e.only.state };
-    if (o.off) {
-      o.off = [].concat(e.off).map((c) => {
-        const x = { ...c };
-        delete x.k; delete x.ks;
-        if (c.k) { x.entity = m.E(c.k); if (!x.entity) return null; }
-        if (c.ks) x.entities = c.ks.map(m.E).filter(Boolean);
-        return x;
-      }).filter(Boolean);
-      if (!o.off.length) o.off = undefined;
-    }
+    if (o.ctl) o.ctl = m.E('blocked_controls') ? { entity: m.E('blocked_controls'), c: e.ctl } : undefined;
     delete o.k;
     for (const k of Object.keys(o)) if (o[k] === undefined) delete o[k];
     return o;
@@ -573,30 +564,44 @@ function tabbed(m, view, tabs, def, layout) {
   };
 }
 
-// Inert conditions from the firmware refusals, shared by the views.
-const FW_BUSY = '^(installing|verifying)$';  // Firmware Update Status during an install and the verify after it
-// Zone N Manual: an opening is refused during an install (ota_pv) and with MAXO zones open (open_limit); closing never.
-const zoneOff = (m, t) => ({ off: [{ k: 'firmware_update_status', re: FW_BUSY, why: t('x_why_fw') },
-  { ks: m.zones.map((n) => `zone_${n}_manual`), state: 'on', n: MAXO, why: t('e_open_limit') }], off_on: true });
-const FIND_MS = 10e3, LONG_MS = 500;  // LONG_MS: long press = history  // the firmware's Find Device time
-// Find Device: the answer stays for the command time, the button inert meanwhile.
-const findRow = (m, t, name) => ({ k: 'find_device', name, edit: true, wide: true, ok: t(m.E('alarm_sound') ? K('find_ok') : K('x_find_led')), hold: FIND_MS });
-// Silence Alarm: the alarm sounds only with the time not valid and the buzzer on (quiet hours are not known to HA).
-const silenceRow = (t, x = {}) => ({ k: 'silence_alarm', name: t('silence'), edit: true, ...x, off: [{ k: 'time_valid', state: 'on', why: t('x_why_noalarm') }, { k: 'alarm_sound', state: 'Off', why: t('x_why_buzoff') }] });
+// Control rules (firmware 2.7.0, spec §8.4): the firmware alone decides when a command is refused and publishes it as
+// Blocked Controls, "<control>:<code>" comma separated ('' = everything allowed, the same pairs as status "ac").
+const ctlList = (v) => {
+  const o = {};
+  if (v && !BAD.includes(v)) for (const p of v.split(',')) { const i = p.indexOf(':'); if (i > 0) o[p.slice(0, i)] = p.slice(i + 1); }
+  return o;
+};
+// The device texts of the codes; silence and closeall say only "none" (nothing to do), find "on" while it runs (a press
+// restarts it: not inert, its answer shown meanwhile).
+const CTLW = { ota_pv: K('e_ota_pv'), open_limit: K('e_open_limit'), aux_zone: K('e_aux_zone'), aux_sync: K('e_aux_sync'),
+  aux_ota: K('e_aux_ota'), nowind: K('e_nowind'), fw_off: K('e_fw_off'), fw_busy: K('e_fw_busy'), ota_busy: K('e_ota_busy'),
+  fw_mem: K('e_fw_mem'), ota_factory: K('e_ota_factory'), fw_none: K('e_fw_none'), fw_rejected: K('e_fw_rejected'),
+  fw_force: K('e_fw_force'), fw_window: K('e_fw_window'), nodata: K('e_nodata') };
+const CTLN = { silence: K('x_why_noalarm'), closeall: K('x_why_nozone') };
+// Code of control c in the Blocked Controls text v, or '' (allowed).
+const ctlCode = (v, c) => ctlList(v)[c] || '';
+// Reason (truthy) why control c is inert with code, or '' (allowed, or find running).
+const ctlWhy = (t, c, code) => (!code || code === 'on' ? '' : code === 'none' ? t(CTLN[c] || K('x_unav')) : CTLW[code] ? t(CTLW[code]) : code);
+const LONG_MS = 500;  // long press = history
+// Zone N Manual: an opening is refused (ota_pv, open_limit); closing never.
+const zoneCtl = { ctl: 'zone', off_on: true };
+// Find Device: its answer shown while the firmware says it runs (find:on); a press restarts it.
+const findRow = (m, t, name) => ({ k: 'find_device', name, edit: true, wide: true, ok: t(m.E('alarm_sound') ? K('find_ok') : K('x_find_led')), ctl: 'find' });
+const silenceRow = (t, x = {}) => ({ k: 'silence_alarm', name: t('silence'), edit: true, ...x, ctl: 'silence' });
 
 function statusView(m, t) {
   const E = m.E, has = (k) => !!E(k);
   const auxName = m.st('aux_label');
   // Zones as rows: a tile would show the switch state (On / Off) where the valve is Open / Closed.
   const zt = rows(m, m.zones.flatMap((n) => [
-    { k: `zone_${n}_manual`, name: m.label(n), fmt: 'open', edit: true, zone: n, ...zoneOff(m, t) },
+    { k: `zone_${n}_manual`, name: m.label(n), fmt: 'open', edit: true, zone: n, ...zoneCtl },
     // Always shown ("—" while empty): rows appearing on a command would resize the card.
     { k: `zone_${n}_end`, name: `${m.label(n)} · ${t('x_end')}`, fmt: 'ts', dash: true },
     // Firmware 2.6.0: the zone's own next start (empty = none); a rain skip is said by the banner.
     { k: `zone_${n}_next_start`, name: `${m.label(n)} · ${t('next')}`, fmt: 'ts', dash: true },
   ]).concat([
     // Inactive while it would do nothing: no zone open.
-    { k: 'close_all_zone_valves', name: t('close_all'), edit: true, wide: true, confirm: t('x_close_q'), off: { k: 'zone_active', state: ['-', '', ...BAD], why: t('x_why_nozone') } },
+    { k: 'close_all_zone_valves', name: t('close_all'), edit: true, wide: true, confirm: t('x_close_q'), ctl: 'closeall' },
   ]), { irr: true, msg_top: true });
   return {
     type: 'sections', max_columns: 4,
@@ -617,11 +622,9 @@ function statusView(m, t) {
           has('wi_fi_network') ? { k: 'wi_fi_network', name: t('wifi'), fmt: 'wifi' } : { k: 'wi_fi_fallback_active', name: t('wfb_chip'), fmt: 'yes' },
         ]),
         // Full-width buttons, one per line, the state on the button (st: on / off text) and long press = history; a
-        // tile cannot be inert. Aux is refused in Sync mode and during an
-        // install; Silence Alarm (Waveshare only) does nothing without an alarm.
+        // tile cannot be inert. Aux and Silence Alarm (Waveshare only) inert as the firmware says.
         rows(m, [
-          m.aux && { k: 'aux', name: auxName && !BAD.includes(auxName) ? auxName : t('aux_def'), edit: true, wide: true, st: [t('vp_on'), t('vp_off')],
-            off: [{ k: 'aux_mode', state: 'Sync', why: t('x_why_sync') }, { k: 'firmware_update_status', state: 'installing', why: t('x_why_fw') }] },
+          m.aux && { k: 'aux', name: auxName && !BAD.includes(auxName) ? auxName : t('aux_def'), edit: true, wide: true, st: [t('vp_on'), t('vp_off')], ctl: 'aux' },
           { k: 'programs_paused', name: t('pause'), edit: true, wide: true, st: [t('x_yes'), t('x_no')] },
           silenceRow(t, { wide: true }),
         ]),
@@ -654,7 +657,7 @@ function statusView(m, t) {
           { k: 'wind_over_threshold', name: t('x_wind_over'), fmt: 'yes' },
           { k: 'wind_pause', name: t('wp'), fmt: 'wpause' },
           // Ignored by the firmware without a wind pause or wait; its answer in the card's message line.
-          { k: 'ignore_wind', name: t('wind_ign'), edit: true, wide: true, ok: t('wind_ignd'), off: { k: 'wind_pause', state: ['off', ...BAD], why: t('x_why_nowind') } },
+          { k: 'ignore_wind', name: t('wind_ign'), edit: true, wide: true, ok: t('wind_ignd'), ctl: 'windign' },
         ]),
       ]),
     ].filter(Boolean),
@@ -669,7 +672,7 @@ function irrigationView(m, t) {
       // The end of the opening, in the format of the next start (a tile shows a long date).
       { k: `zone_${n}_end`, name: t('x_end'), fmt: 'ts', hide_empty: true },
       { k: `zone_${n}_next_start`, name: t('next'), fmt: 'ts', hide_empty: true },
-      { k: `zone_${n}_manual`, name: t('x_man_open'), fmt: 'open', edit: true, zone: n, ...zoneOff(m, t) },
+      { k: `zone_${n}_manual`, name: t('x_man_open'), fmt: 'open', edit: true, zone: n, ...zoneCtl },
       { k: `zone_${n}_irrigation_factor`, name: t('x_zf') },
     ]),
     { type: 'custom:irry-slot-card', device: dev, zone: n, grid_options: { columns: 'full' } },
@@ -895,14 +898,9 @@ function settingsView(m, t) {
           { head: t('fw') },
           { k: 'firmware_update_status', name: t('fwn'), fmt: 'fw' },
           { k: 'firmware_update_mode', name: t('x_fwm'), fmt: 'fwm', edit: true },
-          // Check: refused with updates Off and while a check or an install runs.
-          { k: 'firmware_check', name: t('fwn_check'), edit: true,
-            off: [{ k: 'firmware_update_mode', state: 'Off', why: t('x_why_fwoff') }, { k: 'firmware_update_status', re: '^(checking|installing|verifying)$', why: t('x_why_fwrun') }] },
-          // Install (HA button, no force): refused for a manual-only version, with a zone open, during a wind pause or
-          // wait, and with the next start less than 10 min away (firmware FW_LEAD_S).
-          { k: 'firmware_install', name: t('fwn_go'), fmt: 'fwgo', ref: E('firmware_update_status') || undefined, edit: true,
-            off: [{ k: 'firmware_update_status', re: 'available \\(manual\\)', why: t('x_why_manual') }, { k: 'zone_active', not: ['-', ''], why: t('e_fw_window') },
-              { k: 'wind_pause', state: ['waiting', 'paused'], why: t('e_fw_window') }, { k: 'next_irrigation', soon: 600, why: t('e_fw_window') }] },
+          { k: 'firmware_check', name: t('fwn_check'), edit: true, ctl: 'fwchk' },
+          // Install (HA button, no force).
+          { k: 'firmware_install', name: t('fwn_go'), fmt: 'fwgo', ref: E('firmware_update_status') || undefined, edit: true, ctl: 'fwinst' },
           { k: 'firmware_last_check', name: t('fwn_last'), fmt: 'tsago' },
         ]),
         m.action('get') && { type: 'custom:irry-notes-card', device: m.dev.id, grid_options: { columns: 'full' } },
@@ -1050,6 +1048,7 @@ const CSS = `
   .tg::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left .15s}
   .tg:checked{background:var(--primary-color)} .tg:checked::after{left:18px}
   .msg{font-size:14px;min-height:1.2em} .err{color:var(--error-color)} .ok{color:var(--success-color,#43a047)}
+  .warn{color:var(--warning-color)}
   .z{display:flex;gap:6px;align-items:center;margin:2px 0}
   .rows{padding:4px 16px 8px} .r{display:flex;align-items:center;gap:12px;min-height:40px}
   .msg{height:2.6em;line-height:1.3em;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;color:var(--secondary-text-color);font-size:.9em;border-top:1px solid var(--divider-color);padding-top:4px}
@@ -1190,24 +1189,6 @@ function rowShown(h, row) { return !row.only || [].concat(row.only.state).includ
 // A toggle keeps the requested state until the entity reports it, at most PEND_MS (as PEND in the device UI).
 const PEND_MS = 10e3, ERR_MS = 3e3;
 const EMPTY = (v) => !v || v === '-' || BAD.includes(v);
-// A control is inert (disabled, no action) while one of its off conditions holds: the firmware would refuse or ignore
-// the command then. { entity, state } one of those states; { entity, not } none of them; { entity, re } the state
-// matches; { entity, soon: s } a timestamp less than s seconds away; { entities, state, n } n or more in that state.
-// The reason (c.why) of the first condition that holds, or ''.
-function offHit(h, row) {
-  const st = (e) => (h.states[e] || {}).state;
-  const c = (row.off || []).find((c) => {
-    if (c.entities) return c.entities.filter((e) => [].concat(c.state).includes(st(e))).length >= c.n;
-    const v = st(c.entity);
-    if (v === undefined) return false;
-    if (c.re) return new RegExp(c.re).test(v);
-    if (c.soon) { const ms = Date.parse(v) - Date.now(); return !isNaN(ms) && ms < c.soon * 1e3; }
-    if (c.not) return !BAD.includes(v) && ![].concat(c.not).includes(v);
-    return [].concat(c.state).includes(v);
-  });
-  return c ? c.why || '-' : '';
-}
-
 class IrryRowsCard extends IrryCard {
   getCardSize() { return 1 + ((this._c && this._c.rows) || []).length; }
   // Pending toggles: dropped once the entity has the requested state, or after PEND_MS.
@@ -1219,12 +1200,10 @@ class IrryRowsCard extends IrryCard {
   signature() {
     if (!this._m) return 'none';
     const h = this._h, ids = [], pd = this.settle();
-    for (const r of this._c.rows || []) ids.push(r.entity, r.ref, r.only && r.only.entity, ...(r.refs || []), ...(r.off || []).flatMap((x) => x.entities || [x.entity]));
-    // soon: the time decides too (every 30 s); hold: a pressed button stays inert for a while.
-    const tm = (this._c.rows || []).some((r) => (r.off || []).some((x) => x.soon)) ? Math.floor(Date.now() / 30e3) : 0;
+    for (const r of this._c.rows || []) ids.push(r.entity, r.ref, r.only && r.only.entity, ...(r.refs || []), r.ctl && r.ctl.entity);
     // irr: the irrigation lines of the banner (minute: the wind resume countdown).
     if (this._c.irr) ids.push(...BANNER_KEYS.map(this._m.E), ...this._m.zones.map((n) => this._m.E(`zone_${n}_sheltered_from_rain`)));
-    return JSON.stringify([this._l, this._m.imp, this._m.zones.map(this._m.label), this._err || '', this._why || '', this._ok || '', pd, tm, this.held(),
+    return JSON.stringify([this._l, this._m.imp, this._m.zones.map(this._m.label), this._err || '', this._why || '', this._ok || '', pd,
       this._c.irr && this._m.st('wind_pause') === 'paused' ? Math.floor(Date.now() / 60000) : 0,
       ids.map((i) => { const s = i && h.states[i]; return s && [s.state, s.attributes.unit_of_measurement]; })]);
   }
@@ -1256,7 +1235,10 @@ class IrryRowsCard extends IrryCard {
     // confirmation of a button (row.ok), then (irr) the irrigation lines of the banner. msg_top: above the rows.
     const il = [];
     if (this._c.irr) irrLines(this._m, c, il);
-    const [mk, mt] = this._err ? ['err', this._err] : this._why ? ['warn', this._why] : this._ok ? ['ok', this._ok]
+    // A control running on the device (find:on): its answer while it runs.
+    const run = (this._c.rows || []).find((x) => x.ok && x.ctl && ctlCode((h.states[x.ctl.entity] || {}).state, x.ctl.c) === 'on');
+    const ok = this._ok || (run && run.ok);
+    const [mk, mt] = this._err ? ['err', this._err] : this._why ? ['warn', this._why] : ok ? ['ok', ok]
       : il.length ? [il.some(([y]) => y !== 'info') ? 'warn' : 'info', il.map(([, x]) => x).join(' · ')] : ['', ''];
     const msg = this._c.irr || (this._c.rows || []).some((x) => x.edit)
       ? `<div class="msg${this._c.msg_top ? ' top' : ''}" data-k="${mk}" role="status" title="${esc(mt)}">${esc(mt)}</div>` : '';
@@ -1294,17 +1276,11 @@ class IrryRowsCard extends IrryCard {
       el.replaceWith(p);
     });
   }
-  // Buttons pressed with row.hold, inert until the end of the command (Find Device: FIND_MS of the firmware).
-  held() {
-    const hd = this._hd || {}, now = Date.now();
-    for (const [e, x] of Object.entries(hd)) if (now >= x) delete hd[e];
-    return Object.keys(hd);
-  }
-  // Inert: an off condition holds (off_on: only while the switch is off, the closing is always allowed), or held.
-  // The reason (truthy) or ''.
+  // Inert: the firmware blocks the row's control (off_on: only while the switch is off, the closing is always
+  // allowed). The reason (truthy) or ''.
   inert(row, v) {
-    if (row.hold && this.held().includes(row.entity)) return row.ok || '-';
-    return row.off_on && v && v.state === 'on' ? '' : offHit(this._h, row);
+    if (!row.ctl || (row.off_on && v && v.state === 'on')) return '';
+    return ctlWhy(this._t, row.ctl.c, ctlCode((this._h.states[row.ctl.entity] || {}).state, row.ctl.c));
   }
   // Tap on an inert control: its reason in the message line for ERR_MS, no command.
   deny(row, why) {
@@ -1388,13 +1364,8 @@ class IrryRowsCard extends IrryCard {
         if (row.confirm && !window.confirm(row.confirm)) return;
         await call('button', 'press', {}, target);
         // A visible answer for a press whose effect may not show at once (Ignore Wind, Find Device), gone after
-        // ERR_MS, or with hold at the end of the command (the button inert meanwhile).
-        const hold = row.hold && (this._hms || row.hold);
-        if (hold) {
-          (this._hd = this._hd || {})[row.entity] = Date.now() + hold;
-          setTimeout(() => { this._sig = ''; if (this._h) this.hass = this._h; }, hold + 50);
-        }
-        if (row.ok) { const ok = this._ok = row.ok; setTimeout(() => { if (this._ok === ok) { this._ok = ''; this._sig = ''; if (this._h) this.hass = this._h; } }, hold || this._ems || ERR_MS); }
+        // ERR_MS (Find Device: then kept while the firmware says it runs).
+        if (row.ok) { const ok = this._ok = row.ok; setTimeout(() => { if (this._ok === ok) { this._ok = ''; this._sig = ''; if (this._h) this.hass = this._h; } }, this._ems || ERR_MS); }
       } else if (dom === 'number') {
         // Shown in the device unit, written in the entity's own unit, on its step and within its range.
         const a = s.attributes, u = a.unit_of_measurement, x = devValue(parseFloat(s.state), u, this._m.imp);
@@ -2178,14 +2149,14 @@ class IrryCoefCard extends IrryGetCard {
   }
 }
 
-// Reference ET0 and Calibrate (Settings → Weather). The Calibrate button reports no result to HA: success is read from
-// the Reference ET0 changing within a few seconds; no change and no ET0 yesterday = the firmware "nodata" refusal.
+// Reference ET0 and Calibrate (Settings → Weather). Calibrate is inert while the firmware blocks it (cal:nodata, no
+// valid weather day yet): a tap says why; an allowed press is done.
 class IrryCalCard extends IrryCard {
   signature() {
     const m = this._m;
     if (!m) return 'none';
     const s = m.so('irrigation_reference_et0');
-    return JSON.stringify([this._l, m.imp, s && [s.state, s.attributes.unit_of_measurement], this._msg]);
+    return JSON.stringify([this._l, m.imp, s && [s.state, s.attributes.unit_of_measurement], this.why(), this._msg]);
   }
   paint() {
     const m = this._m, t = this._t, r = this.shadowRoot, c = this.ctx();
@@ -2197,7 +2168,7 @@ class IrryCalCard extends IrryCard {
     r.innerHTML = `<style>${CSS}</style><ha-card><div class="rows">
       <div class="r"><span class="n">${esc(t('m_etr'))}</span><label><input type="number" step="${m.imp ? 0.01 : 0.1}" data-etr
         value="${x ? +x[0].toFixed(x[2]) : ''}"${s.state === 'unavailable' ? ' disabled' : ''}> ${esc(x ? x[1] : '')}</label>
-        ${m.E('irrigation_calibrate') ? `<button data-cal>${esc(t('m_cal'))}</button>` : ''}</div>
+        ${m.E('irrigation_calibrate') ? `<button data-cal${this.why() ? ' aria-disabled="true"' : ''}>${esc(t('m_cal'))}</button>` : ''}</div>
       <div class="msg ${msg.cls || ''}">${esc(msg.text || '')}</div>
       <div class="note">${esc(t('m_etr_h', { ref: uf(c, 'r', 5) }))}</div></div></ha-card>`;
     const inp = r.querySelector('[data-etr]');
@@ -2206,6 +2177,8 @@ class IrryCalCard extends IrryCard {
     if (cb) cb.addEventListener('click', () => this.cal());
   }
   say(text, cls) { this._msg = { text, cls }; this._sig = ''; this.hass = this._h; }
+  // Why Calibrate is refused now (Blocked Controls cal), or ''.
+  why() { return ctlWhy(this._t, 'cal', ctlCode(this._m.st('blocked_controls'), 'cal')); }
   async setEtr(el) {
     const h = this._h, id = this._m.E('irrigation_reference_et0'), s = h.states[id], u = s.attributes.unit_of_measurement;
     let v = parseFloat(String(el.value).replace(',', '.'));
@@ -2218,13 +2191,10 @@ class IrryCalCard extends IrryCard {
     try { await h.callService('number', 'set_value', { value: +v.toFixed(3) }, { entity_id: id }); this.say(this._t('saved'), 'ok'); } catch (e) { this.say(errText(this._m, this._t, this._l, e), 'err'); }
   }
   async cal() {
-    const h = this._h, m = this._m, t = this._t, before = m.st('irrigation_reference_et0');
+    const h = this._h, m = this._m, t = this._t, why = this.why();
+    if (why) return this.say(`${t('m_cal')}: ${why}`, 'warn');
     try { await h.callService('button', 'press', {}, { entity_id: m.E('irrigation_calibrate') }); } catch (e) { return this.say(errText(m, t, this._l, e), 'err'); }
-    this.say(t('x_saving'), '');
-    await new Promise((res) => setTimeout(res, 3000));
-    const m2 = irryModel(this._h, this._c.device, this._l), e0 = m2.st('irrigation_et0_yesterday');
-    const ok = m2.st('irrigation_reference_et0') !== before || !(e0 == null || BAD.includes(e0));
-    this.say(t(ok ? 'saved' : K('e_nodata')), ok ? 'ok' : 'err');
+    this.say(t('saved'), 'ok');
   }
 }
 
@@ -2355,7 +2325,7 @@ window.customCards.push(
 console.info(`%c IRRY THE SEVEN %c ${IRRY_VERSION} `, 'background:#2e7d32;color:#fff', '');
 if (typeof module !== 'undefined') {
   module.exports = { irryModel, statusView, irrigationView, weatherView, settingsView, alerts, tr, slug, errText, ovlText,
-    eventText, fwText, fmtState, devValue, toUnit, I18N, dayView, dayModel, devSlots, devToday, evModel, zoneHead, runs, ovDay, getCall, irryGet, hm, dnOf,
+    eventText, fwText, fmtState, devValue, toUnit, I18N, dayView, dayModel, devSlots, devToday, evModel, zoneHead, runs, ovDay, ctlList, ctlCode, ctlWhy, getCall, irryGet, hm, dnOf,
     ecoGroups, IrryDayCard, IrryEcoCard, IrryCoefCard, IrryCalCard, IrryNotesCard, IrryEventsCard, IrryTabsCard,
     hacsReady, shouldRegenerate, IrryDashboardStrategy, IrryStatusStrategy, IrryIrrigationStrategy, IrryDayStrategy, IrryWeatherStrategy, IrrySettingsStrategy, hour24, unitDec, fmtTime, dayRange, rowShown, coefLines, zoneFactor, IrryRowsCard, IrrySlotCard, IrryRapidCard };
 }

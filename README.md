@@ -21,7 +21,7 @@ the browser.
 By hand: copy `dist/irry-the-seven.js` to `/config/www/`, then in *Settings → Dashboards → ⋮ → Resources* add
 `/local/irry-the-seven.js` as a *JavaScript module*.
 
-Requires Home Assistant 2026.10 or later and the device added through the ESPHome integration.
+Requires Home Assistant 2026.10 or later, Irry The Seven firmware 2.7.0 or later (it publishes the Blocked Controls entity the dashboard reads) and the device added through the ESPHome integration.
 
 ## Use
 
