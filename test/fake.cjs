@@ -7,7 +7,7 @@ function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 
       'Wind Over Threshold'],
     button: ['Close All Zone Valves', 'Find Device', 'Firmware Check', 'Firmware Install', 'Ignore Wind', 'Irrigation Calibrate', 'Restart'],
     number: ['Aux Off Delay', 'Aux On Delay', 'Irrigation Reference ET0', 'Manual Max Duration', 'Rain Skip Threshold', 'Wind Gust Threshold', 'Wind Mean Threshold'],
-    select: ['Aux Mode', 'Firmware Update Mode', 'R8 Mode', 'Units'],
+    select: ['Aux Mode', 'Firmware Update Mode', 'Irrigation Method', 'R8 Mode', 'Units'],
     sensor: ['Irrigation ET0 Yesterday', 'Irrigation Factor', 'Rain Last 24h', 'Uptime', 'Weather Humidity', 'Weather Indoor Humidity',
       'Weather Indoor Temperature', 'Weather Pressure', 'Weather Pressure Sea Level', 'Weather Rain Event', 'Weather Rain Rate',
       'Weather Rain Today', 'Weather Solar Radiation', 'Weather Temperature', 'Weather UV Index', 'Weather Wind Direction',
@@ -16,7 +16,7 @@ function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 
       'Weather Lightning Distance', 'Weather Lightning Count', 'Weather PM2.5', 'Weather Days Used'],
     switch: ['Aux', 'Programs Paused'],
     text: ['Aux Label', 'Rain Attribute', 'Rain Entity', 'Sequence Order', 'Weather Prefix'],
-    text_sensor: ['Firmware Source', 'Firmware Update Status', 'IP Address', 'Irrigation Method', 'Irrigation Overlap Warning',
+    text_sensor: ['Firmware Source', 'Firmware Update Status', 'IP Address', 'Irrigation Overlap Warning',
       'Last Event', 'Next Irrigation', 'Time Source', 'Weather Data', 'Weather Feed', 'Weather Last Update', 'Wi-Fi Network',
       'Wind Pause', 'Wind Resume', 'Zone Active', 'Wind Paused Zones', 'Wind Waiting Zones', 'Wind Skip At', 'Next Sheltered Start',
       'Next Sheltered Zone', 'Blocked Controls', 'Position Source', 'Altitude Source', 'Time Zone', 'RTC', 'Firmware Last Check', 'Problems', 'Weather Fallback'],
@@ -83,7 +83,7 @@ function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 
   set('Weather Wind Direction', '200', { unit_of_measurement: '°' });
   set('Weather Temperature', '18.4', { unit_of_measurement: '°C' });
   set('Weather Pressure', '1013.2', { unit_of_measurement: 'hPa' });
-  set('Irrigation Method', 'fao56');
+  set('Irrigation Method', 'FAO-56', { options: ['None', 'Hargreaves', 'FAO-56'] });
   set('Firmware Update Status', '2.4.1 available');
   set('Last Event', 'Rapid S1: 3 zones');
   set('Next Irrigation', '2026-11-04T05:00:00+00:00');

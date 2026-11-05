@@ -12,7 +12,7 @@
 // Units: the device "Units" select (Auto = from the time zone), as in the device UI; HA sensor values
 // are converted from whatever unit HA shows them in. Graphs keep the HA unit.
 
-const IRRY_VERSION = '0.5.1';
+const IRRY_VERSION = '0.6.0';
 const I18N = /*I18N*/ {} /*END*/;
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -20,7 +20,10 @@ const MODES = ['week', 'even', 'odd', 'every'];  // order of the "Days Mode" sel
 const BAD = ['unknown', 'unavailable', ''];
 const K = (k) => k;  // marks a text key for build.py where t() is called later
 // Select options (English, stable for automations and backups) -> text keys.
+// Irrigation Method select (firmware 2.8.0): its options, as the device publishes them.
+const METH = { None: K('m_off'), Hargreaves: K('m_harg'), 'FAO-56': K('m_fao') }, METH_NONE = 'None';
 const OPT = {
+  method: METH,
   plant: { 'Cool-season lawn': K('m_pt_cool'), 'Warm-season lawn': K('m_pt_warm'), 'Beds, shrubs, hedges': K('m_pt_beds'),
     'Vegetable garden': K('m_pt_veg'), 'Trees, orchard': K('m_pt_tree'), 'Mediterranean, low water': K('m_pt_dry'),
     'Not adapted': K('m_pt_none') },
@@ -31,7 +34,7 @@ const OPT = {
 };
 // Text sensor states -> text keys.
 const STATE = {
-  method: { none: K('m_off'), hargreaves: K('m_harg'), fao56: K('m_fao') },
+  method: METH,
   wdata: { off: K('m_off'), missing: K('x_wd_missing'), collecting: K('x_wd_collecting'), fallback: K('x_wd_fallback'), ok: K('ok') },
   feed: { none: K('m_none'), unpaired: K('m_eco_none'), stale: K('x_feed_stale'), ok: K('ok') },
   wpause: { off: K('m_none'), waiting: K('ww'), paused: K('wp') },
@@ -536,10 +539,13 @@ const noDevice = (t) => ({
 // { note } is a text line, { name, value } a fixed value; only: { k, state } shows the row while that entity has that state
 // (a list: one of them; no state: while it exists). ctl: the firmware control whose Blocked Controls code makes the
 // control inert (see ctlWhy); dropped when the device has no Blocked Controls.
+// dash_by: {k, state}: the row's value shown as a dash while that entity has that state.
+const METHOD_OFF = { k: 'irrigation_method', state: METH_NONE };
 function rows(m, list, x = {}) {
   const r = list.filter((e) => e && (!e.only || m.E(e.only.k)) && (e.head || e.note || e.value || m.E(e.k))).map((e) => {
     const o = e.head || e.note || e.value ? { ...e } : { ...e, entity: m.E(e.k) };
     if (o.only) o.only = o.only.state === undefined ? undefined : { entity: m.E(e.only.k), state: e.only.state };
+    if (o.dash_by) o.dash_by = m.E(e.dash_by.k) ? { entity: m.E(e.dash_by.k), state: e.dash_by.state } : undefined;
     if (o.ctl) o.ctl = m.E('blocked_controls') ? { entity: m.E('blocked_controls'), c: e.ctl } : undefined;
     delete o.k;
     for (const k of Object.keys(o)) if (o[k] === undefined) delete o[k];
@@ -576,7 +582,7 @@ const ctlList = (v) => {
 const CTLW = { ota_pv: K('e_ota_pv'), open_limit: K('e_open_limit'), aux_zone: K('e_aux_zone'), aux_sync: K('e_aux_sync'),
   aux_ota: K('e_aux_ota'), nowind: K('e_nowind'), fw_off: K('e_fw_off'), fw_busy: K('e_fw_busy'), ota_busy: K('e_ota_busy'),
   fw_mem: K('e_fw_mem'), ota_factory: K('e_ota_factory'), fw_none: K('e_fw_none'), fw_rejected: K('e_fw_rejected'),
-  fw_force: K('e_fw_force'), fw_window: K('e_fw_window'), nodata: K('e_nodata') };
+  fw_force: K('e_fw_force'), fw_window: K('e_fw_window'), nodata: K('e_nodata'), nosrc: K('wind_nosrc') };
 const CTLN = { silence: K('x_why_noalarm'), closeall: K('x_why_nozone') };
 // Reasons shown as an error (red) rather than a warning: the zone limit asks the user to close a zone first.
 const CTLE = ['open_limit'];
@@ -632,12 +638,13 @@ function statusView(m, t) {
         // Duration adaptation in the same section: below Stato in every layout (a section of its own flows beside it).
         heading(t('m_meth'), 'mdi:sprout'),
         rows(m, [
-          { k: 'irrigation_method', name: t('m_meth'), fmt: 'method' },
+          // The method select; inert as the firmware says (meth:nosrc, no weather source).
+          { k: 'irrigation_method', name: t('m_meth'), fmt: 'method', edit: true, ctl: 'meth' },
           { k: 'weather_data', name: t('x_wdata'), fmt: 'wdata', refs: [E('weather_days_used'), E('weather_fallback')].filter(Boolean) },
-          { k: 'irrigation_factor', name: t('m_f') },
-          { k: 'irrigation_et0_yesterday', name: t('m_et0y') },
-          { k: 'weather_feed', name: t('m_eco'), fmt: 'feed' },
-          { k: 'weather_battery', name: t('m_batt'), fmt: 'batt' },
+          // Method off: factor and ET0 shown as a dash (the method state as the device reports it). Ecowitt and its
+          // battery are in Diagnostics, a flat battery also in Problems.
+          { k: 'irrigation_factor', name: t('m_f'), dash_by: METHOD_OFF },
+          { k: 'irrigation_et0_yesterday', name: t('m_et0y'), dash_by: METHOD_OFF },
         ]),
       ]),
       section([heading(t('zones'), 'mdi:map-marker-radius'), zt]),
@@ -861,7 +868,7 @@ function settingsView(m, t) {
         heading(t('wx'), 'mdi:weather-partly-cloudy'),
         rows(m, [
           { k: 'weather_feed', name: t('x_wsrc'), fmt: 'wsrc', refs: [E('weather_prefix'), E('rain_entity')].filter(Boolean) },
-          { k: 'irrigation_method', name: t('m_meth'), fmt: 'method' },
+          { k: 'irrigation_method', name: t('m_meth'), fmt: 'method', edit: true, ctl: 'meth' },
           { k: 'weather_prefix', name: t('m_pfx'), edit: true, pat: '^sensor\\.[a-z0-9_]+$', only: { k: 'weather_feed', state: NOECO } },
         ]),
         E('irrigation_reference_et0') && { type: 'custom:irry-cal-card', device: m.dev.id, grid_options: { columns: 'full' } },
@@ -930,9 +937,10 @@ function settingsView(m, t) {
           { k: 'wi_fi_signal', name: t('signal') },
           { k: 'ip_address', name: t('ip') },
           { k: 'uptime', name: t('uptime'), fmt: 'dur' },
-          { head: t('x_station') },
-          { k: 'weather_feed', name: t('x_station'), fmt: 'feed' },
+          { head: t('m_eco') },
+          { k: 'weather_feed', name: t('x_eco_pair'), fmt: 'feed' },
           { k: 'weather_last_update', name: t('m_eco_rx'), fmt: 'tsago' },
+          { k: 'weather_battery', name: t('m_batt'), fmt: 'batt' },
           // Find Device at the end of Diagnostics, full width (x8: LED only).
           findRow(m, t, t('find')),
         ]),
@@ -1020,6 +1028,7 @@ const CSS = `
   label{font-size:14px;color:var(--secondary-text-color);display:flex;gap:6px;align-items:center}
   input,select{font:inherit;color:var(--primary-text-color);background:var(--card-background-color,#fff);
     border:1px solid var(--divider-color);border-radius:6px;padding:4px 6px}
+  select[aria-disabled=true]{cursor:default;border-style:dashed}
   input[type=number]{width:5em} .b{font-weight:500;color:var(--primary-text-color)}
   .days{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
   button.day{width:34px;height:34px;border-radius:50%;padding:0;font-weight:500;background:none;
@@ -1201,7 +1210,7 @@ class IrryRowsCard extends IrryCard {
   signature() {
     if (!this._m) return 'none';
     const h = this._h, ids = [], pd = this.settle();
-    for (const r of this._c.rows || []) ids.push(r.entity, r.ref, r.only && r.only.entity, ...(r.refs || []), r.ctl && r.ctl.entity);
+    for (const r of this._c.rows || []) ids.push(r.entity, r.ref, r.only && r.only.entity, ...(r.refs || []), r.ctl && r.ctl.entity, r.dash_by && r.dash_by.entity);
     // irr: the irrigation lines of the banner (minute: the wind resume countdown).
     if (this._c.irr) ids.push(...BANNER_KEYS.map(this._m.E), ...this._m.zones.map((n) => this._m.E(`zone_${n}_sheltered_from_rain`)));
     return JSON.stringify([this._l, this._m.imp, this._m.zones.map(this._m.label), this._err || '', this._why || '', this._whyK || '', this._ok || '', pd,
@@ -1230,7 +1239,7 @@ class IrryRowsCard extends IrryCard {
       const ctl = row.edit ? this.control(dom, row, s, i, name) : null;
       html.push(ctl
         ? `<div class="r"><span class="n">${dom === 'button' ? '' : esc(name)}</span>${ctl}</div>`
-        : `<div class="r tap" data-more="${esc(row.entity)}">${row.icon ? `<ha-icon class="ic${s.state === 'on' ? ' on' : ''}" icon="${esc(row.icon[s.state === 'on' ? 0 : 1])}"></ha-icon>` : ''}<span class="n">${esc(name)}</span><span class="v">${esc(((x) => (row.dash && (EMPTY(s.state) || x === '-') ? '—' : x))(fmtState(row.fmt, s, c, row)))}</span></div>`);
+        : `<div class="r tap" data-more="${esc(row.entity)}">${row.icon ? `<ha-icon class="ic${s.state === 'on' ? ' on' : ''}" icon="${esc(row.icon[s.state === 'on' ? 0 : 1])}"></ha-icon>` : ''}<span class="n">${esc(name)}</span><span class="v">${esc(((x) => ((row.dash && (EMPTY(s.state) || x === '-')) || (row.dash_by && (h.states[row.dash_by.entity] || {}).state === row.dash_by.state) ? '—' : x))(fmtState(row.fmt, s, c, row)))}</span></div>`);
     });
     // Message line, reserved (empty) on cards that write: the card keeps its height. Refusal, then the
     // confirmation of a button (row.ok), then (irr) the irrigation lines of the banner. msg_top: above the rows.
@@ -1319,7 +1328,7 @@ class IrryRowsCard extends IrryCard {
     if (dom === 'select') {
       const tx = (x) => (OPT[row.fmt] && OPT[row.fmt][x] ? t(OPT[row.fmt][x]) : x);
       const o = (a.options || []).map((x) => `<option value="${esc(x)}"${x === s.state ? ' selected' : ''}>${esc(tx(x))}</option>`);
-      return `<select data-i="${i}"${dis}>${o.join('')}</select>`;
+      return `<select data-i="${i}"${dis || (this.inert(row, s) ? ' aria-disabled="true"' : '')}>${o.join('')}</select>`;
     }
     if (dom === 'text') {
       if (row.pick && typeof customElements !== 'undefined' && customElements.get('ha-selector') && !dis) return `<span data-pk="${i}"></span>`;
@@ -1492,7 +1501,7 @@ class IrryEditCard extends IrryCard {
 // Today's zone factor (%) while the method adapts the durations, else null.
 function zoneFactor(m, n) {
   const meth = m.st('irrigation_method'), f = parseFloat(m.st(`zone_${n}_irrigation_factor`));
-  if (!meth || meth === 'none' || BAD.includes(meth) || m.st(`zone_${n}_plant_type`) === 'Not adapted' || isNaN(f)) return null;
+  if (!meth || meth === METH_NONE || BAD.includes(meth) || m.st(`zone_${n}_plant_type`) === 'Not adapted' || isNaN(f)) return null;
   return f;
 }
 class IrrySlotCard extends IrryEditCard {
@@ -2131,7 +2140,7 @@ class IrryCoefCard extends IrryGetCard {
     const pc = (k) => { const v = parseFloat(m.st(k)); return isNaN(v) ? '-' : `${nf(v, 0, l)} %`; };
     const meth = m.st('irrigation_method');
     let b;
-    if (!meth || meth === 'none' || BAD.includes(meth)) b = `<div class="note">${esc(t('wx_c_off'))}</div>`;
+    if (!meth || meth === METH_NONE || BAD.includes(meth)) b = `<div class="note">${esc(t('wx_c_off'))}</div>`;
     else {
       b = `<div class="h">${esc(t('m_res'))}</div>${kv(t('m_f'), pc('irrigation_factor'))}`;
       b += coefLines(m, t, l).map(([k, v]) => kv(k, v)).join('');

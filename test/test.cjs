@@ -351,7 +351,7 @@ function refs(o, out = []) {
     const he7 = fakeHass(); sset(he7, 'Zone 1 Irrigation Factor', '80');
     const sc = mk(lib.IrrySlotCard, { zone: 1 }, he7).card, e10 = sc.est({ duration: 10 }), e0 = sc.est({ duration: 0 });
     sset(he7, 'Zone 1 Plant Type', 'Not adapted'); const ena = sc.est({ duration: 10 });
-    sset(he7, 'Zone 1 Plant Type', 'Cool-season lawn'); sset(he7, 'Irrigation Method', 'none'); const eno = sc.est({ duration: 10 });
+    sset(he7, 'Zone 1 Plant Type', 'Cool-season lawn'); sset(he7, 'Irrigation Method', 'None'); const eno = sc.est({ duration: 10 });
     ok(e10.includes(t('x_today_est', { min: 8 })) && e0 === '' && ena === '' && eno === '', `slot effective duration ${e10}|${e0}|${ena}|${eno}`);
   }
   // Rapid card: the zones in use (no zone 7 in Aux mode), move buttons off at the ends, the action data, the limit refusal.
@@ -438,7 +438,7 @@ function refs(o, out = []) {
     ok(k2 === `${t('x_all_zones')}: 80 % | Zona 2: 90 %`, `coef: one zone differs ${k2}`);
     ok(k3 === 'Prato: 60 % | Zona 2: 70 % | Zona 3: 80 % | Zona 4: 90 %', `coef: all differ, zones with no slot left out ${k3}`);
     ok(k4 === `Prato: 60 % | Zona 2: 70 % | Zona 3: 80 % · ${t('m_sh')} | Zona 4: ${t('m_pt_none')}`, `coef: sheltered, not adapted ${k4}`);
-    sset(hk, 'Irrigation Method', 'none');
+    sset(hk, 'Irrigation Method', 'None');
     const kc = mk(lib.IrryCoefCard, {}, hk); await tick();
     ok(kc.html().includes(t('wx_c_off')) && !kc.html().includes(t('x_all_zones')), 'coef card: method off');
   }
@@ -781,8 +781,40 @@ function refs(o, out = []) {
     const h0 = fakeHass(), sv = await reg['ll-strategy-view-irry-status'].generate({}, h0), cards = sv.sections.flatMap((x) => x.cards);
     const rowsOf = (k) => cards.filter((c) => c.rows).flatMap((c) => c.rows).find((r) => new RegExp(`${k}$`).test(r.entity || ''));
     // Every banner subject has a card row: health, station, battery, weather data; firmware and Wi-Fi in Diagnostics only.
-    ok(['problems', 'weather_feed', 'weather_battery', 'weather_data', 'zone_active', 'rain_skip_active', 'wind_pause']
+    ok(['problems', 'weather_data', 'zone_active', 'rain_skip_active', 'wind_pause']
       .every((k) => rowsOf(k)), 'status: banner subjects in the cards');
+    // Duration adaptation: method, weather data, factor, ET0 only; Ecowitt (pairing, last data, battery) in Diagnostics.
+    {
+      const da = cards.find((c) => c.rows && c.rows.some((r) => /irrigation_method$/.test(r.entity || '')));
+      ok(da.rows.map((r) => r.entity.replace(/^.*_[0-9a-f]{6}_/, '')).join() === 'irrigation_method,weather_data,irrigation_factor,irrigation_et0_yesterday',
+        `status: duration adaptation rows ${da.rows.map((r) => r.entity)}`);
+      ok(!rowsOf('weather_feed') && !rowsOf('weather_battery'), 'status: no Ecowitt or battery rows');
+      const sg = (await reg['ll-strategy-view-irry-settings'].generate({}, h0)), dr = JSON.stringify(sg);
+      const dc = sg.sections.flatMap((x) => x.cards).flatMap((c) => (c.tabs || []).flatMap((tb) => tb.sections.flat())).concat(sg.sections.flatMap((x) => x.cards))
+        .find((c) => c.rows && c.rows.some((r) => r.head === t('x_diag') || (r.entity || '').endsWith('uptime')));
+      const hi = dc && dc.rows.findIndex((r) => r.head === t('m_eco')), tail = dc ? dc.rows.slice(hi + 1, hi + 4) : [];
+      ok(hi >= 0 && tail.map((r) => r.name).join() === [t('x_eco_pair'), t('m_eco_rx'), t('m_batt')].join() && /weather_feed$/.test(tail[0].entity)
+        && /weather_battery$/.test(tail[2].entity) && !dc.rows.some((r) => r.head === t('x_station')), `diagnostics: Ecowitt group ${tail.map((r) => r.name)} ${dr.length}`);
+      // Method off: factor and ET0 a dash, read from the method state; the card keeps its rows.
+      const pv = (hh) => (mk(lib.IrryRowsCard, da, hh).html().match(/<span class="v">([^<]*)</g) || []).map((x) => x.slice(x.indexOf('>') + 1, -1));
+      const v1 = pv(h0), v0 = pv(put(h0, 'Irrigation Method', 'None'));
+      ok(v1.length === 3 && v0.length === 3 && v1[1] !== '—' && v1[2] !== '—' && v0[1] === '—' && v0[2] === '—', `status: method None = dashes ${v1} / ${v0}`);
+      // Method: the select of firmware 2.8.0 (select_option), its options translated; inert with meth:nosrc (reason, no call).
+      const mr = da.rows.find((r) => /irrigation_method$/.test(r.entity)), mi = da.rows.indexOf(mr), hm = { ...h0, calls: [] };
+      hm.callService = async (d, sv, data, tg) => { hm.calls.push({ d, sv, data, tg }); };
+      const mc = mk(lib.IrryRowsCard, da, hm), sel = (c) => (c.html().match(new RegExp(`<select data-i="${mi}"[^>]*>[\\s\\S]*?</select>`)) || [''])[0];
+      ok(/^select\./.test(mr.entity) && mr.edit && mr.ctl.c === 'meth' && sel(mc).includes(`<option value="None">${t('m_off')}<`) && sel(mc).includes(`>${t('m_fao')}<`)
+        && /value="FAO-56" selected/.test(sel(mc)) && !/aria-disabled/.test(sel(mc)), `method: a select ${sel(mc).slice(0, 160)}`);
+      await mc.card.write(mr, { value: 'Hargreaves', blur() {}, classList: { add() {} } });
+      ok(hm.calls.length === 1 && hm.calls[0].d === 'select' && hm.calls[0].sv === 'select_option' && hm.calls[0].data.option === 'Hargreaves' && hm.calls[0].tg.entity_id === mr.entity,
+        `method: select_option ${JSON.stringify(hm.calls)}`);
+      const hn = put(hm, 'Blocked Controls', 'meth:nosrc'); hn.calls = []; hn.callService = async (d, sv, data, tg) => { hn.calls.push({ d, sv }); };
+      const mn = mk(lib.IrryRowsCard, da, hn); mn.card._ems = 60000;
+      ok(/aria-disabled="true"/.test(sel(mn)), 'method: inert with meth:nosrc');
+      await mn.card.write(mr, { value: 'None', blur() {}, classList: { add() {} } });
+      ok(!hn.calls.length && mn.html().includes(t('wind_nosrc')) && /data-k="warn"/.test(mn.html()), 'method: nosrc reason, no call');
+      ok(!/"sensor\.[a-z0-9_]+_irrigation_method"/.test(JSON.stringify(await reg['ll-strategy-view-irry-settings'].generate({}, h0)) + JSON.stringify(cards)), 'method: no old text sensor');
+    }
     ok(!['firmware_update_status', 'wi_fi_network', 'wi_fi_fallback_active'].some((k) => rowsOf(k)), 'status: no Firmware or Wi-Fi rows (Diagnostics)');
     {
       const dg = JSON.stringify(await reg['ll-strategy-view-irry-settings'].generate({}, h0));
@@ -1032,7 +1064,7 @@ function refs(o, out = []) {
     // Blocked Controls parity (tests/host/ctl_cases.json, the firmware's own cases): the list parses in the fixed control
     // order and back, and every code has its text in each language; find:on is not a reason (a press restarts it).
     const fs = require('fs'), cj = JSON.parse(fs.readFileSync(path.join(FIX, 'ctl_cases.json'), 'utf8'));
-    const ORD = ['zone', 'aux', 'silence', 'closeall', 'windign', 'fwchk', 'fwinst', 'cal', 'find'];
+    const ORD = ['zone', 'aux', 'silence', 'closeall', 'windign', 'fwchk', 'fwinst', 'cal', 'find', 'meth'];
     ok(JSON.stringify(lib.ctlList('')) === '{}' && JSON.stringify(lib.ctlList('unavailable')) === '{}', 'ctl: empty and unavailable lists');
     const langs = ['en', 'it', 'de', 'fr', 'es', 'pt'].map((l) => [l, lib.tr(l)]);
     for (const k of cj.cases) {

@@ -9,7 +9,8 @@
     "zones": 1,
     "wind": 1,
     "mem": 1,
-    "cal": 1
+    "cal": 1,
+    "msrc": 1
    },
    "list": ""
   },
@@ -20,13 +21,13 @@
     "mem": 1,
     "fwinst": "fw_none"
    },
-   "list": "silence:none,closeall:none,windign:nowind,fwinst:fw_none,cal:nodata"
+   "list": "silence:none,closeall:none,windign:nowind,fwinst:fw_none,cal:nodata,meth:nosrc"
   },
   {
    "id": "CT-03",
    "desc": "all inputs false",
    "in": {},
-   "list": "silence:none,closeall:none,windign:nowind,fwchk:fw_mem,cal:nodata"
+   "list": "silence:none,closeall:none,windign:nowind,fwchk:fw_mem,cal:nodata,meth:nosrc"
   },
   {
    "id": "CT-04",
@@ -39,7 +40,8 @@
     "cal": 1,
     "ota_z": 1,
     "full": 1,
-    "fw_pend": 1
+    "fw_pend": 1,
+    "msrc": 1
    },
    "list": "zone:ota_pv,fwchk:ota_busy"
   },
@@ -52,7 +54,8 @@
     "wind": 1,
     "mem": 1,
     "cal": 1,
-    "full": 1
+    "full": 1,
+    "msrc": 1
    },
    "list": "zone:open_limit"
   },
@@ -67,7 +70,8 @@
     "cal": 1,
     "aux_zone": 1,
     "aux_sync": 1,
-    "ota": 1
+    "ota": 1,
+    "msrc": 1
    },
    "list": "aux:aux_zone"
   },
@@ -81,7 +85,8 @@
     "mem": 1,
     "cal": 1,
     "aux_sync": 1,
-    "ota": 1
+    "ota": 1,
+    "msrc": 1
    },
    "list": "aux:aux_sync"
   },
@@ -97,7 +102,8 @@
     "ota": 1,
     "ota_z": 1,
     "fw_pend": 1,
-    "fwinst": "ota_busy"
+    "fwinst": "ota_busy",
+    "msrc": 1
    },
    "list": "zone:ota_pv,aux:aux_ota,fwchk:ota_busy,fwinst:ota_busy"
   },
@@ -112,7 +118,8 @@
     "cal": 1,
     "fw_off": 1,
     "fw_busy": 1,
-    "fw_pend": 1
+    "fw_pend": 1,
+    "msrc": 1
    },
    "list": "fwchk:fw_off"
   },
@@ -127,7 +134,8 @@
     "cal": 1,
     "fw_busy": 1,
     "fw_pend": 1,
-    "fwinst": "fw_busy"
+    "fwinst": "fw_busy",
+    "msrc": 1
    },
    "list": "fwchk:fw_busy,fwinst:fw_busy"
   },
@@ -139,7 +147,8 @@
     "zones": 1,
     "wind": 1,
     "mem": 0,
-    "cal": 1
+    "cal": 1,
+    "msrc": 1
    },
    "list": "fwchk:fw_mem"
   },
@@ -153,9 +162,22 @@
     "mem": 1,
     "cal": 1,
     "fwinst": "fw_window",
-    "find": 1
+    "find": 1,
+    "msrc": 1
    },
    "list": "fwinst:fw_window,find:on"
+  },
+  {
+   "id": "CT-13",
+   "desc": "no weather source: method saved without effect",
+   "in": {
+    "sound": 1,
+    "zones": 1,
+    "wind": 1,
+    "mem": 1,
+    "cal": 1
+   },
+   "list": "meth:nosrc"
   }
  ]
 }
