@@ -16,11 +16,26 @@ import sys
 HA = pathlib.Path(__file__).resolve().parent
 UI = HA.parent / 'src' / 'ui'
 LANGS = ['en', 'it', 'de', 'fr', 'es', 'pt']
-FILES = ['README.md', 'build.py', 'hacs.json', 'src/irry-the-seven.js', 'test/fake.cjs', 'test/test.cjs', 'test/preview.html']
+FILES = ['README.md', 'build.py', 'hacs.json', 'src/irry-the-seven.js', 'test/fake.cjs', 'test/test.cjs', 'test/preview.html',
+         'blueprints/automation/irry_the_seven_security.yaml']
+
+
+def fixtures():
+    # Shared firmware fixtures: tests/fixtures in the firmware repository, test/fixtures in the exported one.
+    d = HA.parent / 'tests' / 'fixtures'
+    return d if d.exists() else HA / 'test' / 'fixtures'
+
+
+def ctl_texts():
+    # Blocked Controls: control -> code -> text keys, from the firmware's controls.json (codes without a key: none).
+    codes = json.loads((fixtures() / 'controls.json').read_text())['codes']
+    return {c: {k: (v['key'] if isinstance(v['key'], list) else [v['key']]) for k, v in cs.items() if v.get('key')}
+            for c, cs in codes.items()}
 
 
 def texts(src):
     keys = {k for k in re.findall(r"(?:\b|_)[tK]\('([a-z0-9_]+)'", src) if not k.endswith('_')}
+    keys |= {k for cs in ctl_texts().values() for ks in cs.values() for k in ks}
     keys |= {'dm_' + m for m in re.search(r"const MODES = \[([^\]]*)\]", src).group(1).replace("'", '').replace(' ', '').split(',')}
     extra = json.loads((HA / 'i18n.json').read_text())
     out, missing = {}, []
@@ -44,6 +59,8 @@ def main():
     out = texts(src)
     blob = json.dumps(out, ensure_ascii=False, separators=(',', ':'))
     dist = re.sub(r'/\*I18N\*/.*?/\*END\*/', lambda m: blob, src, count=1, flags=re.S)
+    ctl = json.dumps(ctl_texts(), separators=(',', ':'))
+    dist = re.sub(r'/\*CTL\*/.*?/\*END\*/', lambda m: ctl, dist, count=1, flags=re.S)
     # One scope: loaded as a module or as a classic script, nothing leaks into the page.
     dist = '(() => {\n' + dist + '})();\n'
     (HA / 'dist').mkdir(exist_ok=True)
@@ -56,8 +73,7 @@ def main():
             shutil.copy(HA / f, to / f)
         shutil.copy(UI / 'LICENSE', to / 'LICENSE')
         (to / 'test' / 'fixtures').mkdir(exist_ok=True)
-        for f in ('runs_cases.json', 'ov_cases.json', 'ctl_cases.json'):
-            shutil.copy(HA.parent / 'tests' / 'host' / f, to / 'test' / 'fixtures' / f)
+        shutil.copytree(fixtures(), to / 'test' / 'fixtures', dirs_exist_ok=True)
         (to / 'i18n.json').write_text(dump(out))
         print(f'exported to {to}')
 

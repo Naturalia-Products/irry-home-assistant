@@ -1,5 +1,5 @@
 {
- "about": "Control rule cases (spec §8.4): inputs of it7::ctl_why (src/haparcore.h CtlIn, missing = false, fwinst = the fw_block code or none) and the HA Blocked Controls text expected (status ac = the same pairs). Run by tests/host/test_plan_cases.cpp and tools/mock_check.js (ui-proto/mock.js ctlRule).",
+ "about": "Control rule cases (spec §8.4): inputs of it7::ctl_why (src/haparcore.h CtlIn, missing = false, wx_off = public view not chosen, fwinst = the fw_block code or none) and the HA Blocked Controls text expected (status ac = the same pairs). Run by tests/host/test_plan_cases.cpp and tools/mock_check.js (ui-proto/mock.js ctlRule).",
  "cases": [
   {
    "id": "CT-01",
@@ -21,13 +21,13 @@
     "mem": 1,
     "fwinst": "fw_none"
    },
-   "list": "silence:none,closeall:none,windign:nowind,fwinst:fw_none,cal:nodata,meth:nosrc"
+   "list": "silence:none,closeall:none,windign:nowind,fwinst:fw_none,cal:nodata,meth:nosrc,wxpub:nosrc"
   },
   {
    "id": "CT-03",
    "desc": "all inputs false",
    "in": {},
-   "list": "silence:none,closeall:none,windign:nowind,fwchk:fw_mem,cal:nodata,meth:nosrc"
+   "list": "silence:none,closeall:none,windign:nowind,fwchk:fw_mem,cal:nodata,meth:nosrc,wxpub:nosrc"
   },
   {
    "id": "CT-04",
@@ -177,7 +177,33 @@
     "mem": 1,
     "cal": 1
    },
-   "list": "meth:nosrc"
+   "list": "meth:nosrc,wxpub:nosrc"
+  },
+  {
+   "id": "CT-14",
+   "desc": "public weather view not chosen: wxpub off before nosrc",
+   "in": {
+    "sound": 1,
+    "zones": 1,
+    "wind": 1,
+    "mem": 1,
+    "cal": 1,
+    "wx_off": 1
+   },
+   "list": "meth:nosrc,wxpub:off"
+  },
+  {
+   "id": "CT-15",
+   "desc": "public weather view chosen, source configured: allowed",
+   "in": {
+    "sound": 1,
+    "zones": 1,
+    "wind": 1,
+    "mem": 1,
+    "cal": 1,
+    "msrc": 1
+   },
+   "list": ""
   }
  ]
 }

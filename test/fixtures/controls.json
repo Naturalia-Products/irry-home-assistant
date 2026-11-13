@@ -1,0 +1,141 @@
+{
+ "note": "Blocked Controls (spec §8.4): the controls in the fixed firmware order (it7::ctl_name, haparcore.h) and, per control, every code it7::ctl_why can give with its English text. A list is \"<control>:<code>\" joined by commas in this order (cases: ctl_cases.json). \"key\" is the device UI string (src/ui/i18n/en.json, all languages) unless \"from\" says otherwise; checked by tests/host/test_status.cpp.",
+ "order": [
+  "zone",
+  "aux",
+  "silence",
+  "closeall",
+  "windign",
+  "fwchk",
+  "fwinst",
+  "cal",
+  "find",
+  "meth",
+  "wxpub"
+ ],
+ "codes": {
+  "zone": {
+   "ota_pv": {
+    "key": "e_ota_pv",
+    "en": "New firmware being validated: valves cannot be opened yet"
+   },
+   "open_limit": {
+    "key": "e_open_limit",
+    "en": "3 zones already open: close one first"
+   }
+  },
+  "aux": {
+   "aux_zone": {
+    "key": "e_aux_zone",
+    "en": "Aux not available: R8 is a zone"
+   },
+   "aux_sync": {
+    "key": "e_aux_sync",
+    "en": "Aux follows the valves (Sync mode)"
+   },
+   "aux_ota": {
+    "key": "e_aux_ota",
+    "en": "Firmware update running: Aux cannot be switched now"
+   }
+  },
+  "silence": {
+   "none": {
+    "key": "x_why_noalarm",
+    "en": "No alarm sounding",
+    "from": "ha/i18n.json"
+   }
+  },
+  "closeall": {
+   "none": {
+    "key": "x_why_nozone",
+    "en": "No zone open",
+    "from": "ha/i18n.json"
+   }
+  },
+  "windign": {
+   "nowind": {
+    "key": "e_nowind",
+    "en": "No wind pause in progress"
+   }
+  },
+  "fwchk": {
+   "fw_off": {
+    "key": "e_fw_off",
+    "en": "Internet update is off"
+   },
+   "fw_busy": {
+    "key": "e_fw_busy",
+    "en": "Another operation is running: try again in a moment"
+   },
+   "ota_busy": {
+    "key": "e_ota_busy",
+    "en": "Update refused: valves open, an update running or firmware being verified"
+   },
+   "fw_mem": {
+    "key": "e_fw_mem",
+    "en": "Not enough free memory right now: try again in a minute"
+   }
+  },
+  "fwinst": {
+   "ota_factory": {
+    "key": "e_ota_factory",
+    "en": "Update not available before the initial setup"
+   },
+   "fw_busy": {
+    "key": "e_fw_busy",
+    "en": "Another operation is running: try again in a moment"
+   },
+   "ota_busy": {
+    "key": "e_ota_busy",
+    "en": "Update refused: valves open, an update running or firmware being verified"
+   },
+   "fw_none": {
+    "key": "e_fw_none",
+    "en": "No update available: check again"
+   },
+   "fw_rejected": {
+    "key": "e_fw_rejected",
+    "en": "This version was discarded"
+   },
+   "fw_force": {
+    "key": "e_fw_force",
+    "en": "This version must be confirmed in the app"
+   },
+   "fw_window": {
+    "key": "e_fw_window",
+    "en": "Not now: valves open, a program due within 10 minutes, or a wind pause"
+   }
+  },
+  "cal": {
+   "nodata": {
+    "key": "e_nodata",
+    "en": "No complete day of data yet: try again tomorrow."
+   }
+  },
+  "find": {
+   "on": {
+    "en": "",
+    "note": "Find Device running: not a reason, a press restarts it"
+   }
+  },
+  "meth": {
+   "nosrc": {
+    "key": "wind_nosrc",
+    "en": "No weather source: choose one in the Weather card"
+   }
+  },
+  "wxpub": {
+   "off": {
+    "key": [
+     "wxp_0",
+     "wxp_0h"
+    ],
+    "en": "Station access only: without signing in only the sign-in page is shown."
+   },
+   "nosrc": {
+    "key": "wxp_nosrc",
+    "en": "No weather source is set: the public page is not shown yet."
+   }
+  }
+ }
+}

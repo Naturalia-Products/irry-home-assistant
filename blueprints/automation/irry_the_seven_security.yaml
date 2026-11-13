@@ -1,0 +1,128 @@
+blueprint:
+  name: Irry The Seven - login lockout notification
+  description: >-
+    Shows a persistent notification while the device blocks one or more addresses after repeated wrong
+    passwords (firmware 3.0 or later), with the device name, each blocked address and until when, and the
+    duration of the latest ban. The notification is updated when a ban starts or changes and removed when
+    the last one ends. It reads only the device's own Security entities: the device alone decides attempts
+    and bans, Home Assistant needs no extra permission and cannot lift a ban.
+    To turn it off, disable or delete the automation made from this blueprint.
+  domain: automation
+  author: Naturalia
+  homeassistant:
+    min_version: 2026.10.0
+  input:
+    lockout:
+      name: Security Login Lockout
+      description: The device's "Security Login Lockout" entity (on while any address is blocked).
+      selector:
+        entity:
+          filter:
+            - integration: esphome
+              domain: binary_sensor
+              device_class: problem
+    ban_list:
+      name: Security Ban List
+      description: The same device's "Security Ban List" entity (blocked addresses and until when).
+      selector:
+        entity:
+          filter:
+            - integration: esphome
+              domain: sensor
+    last_event:
+      name: Security Last Event (optional)
+      description: The same device's "Security Last Event" entity, for the duration of the latest ban.
+      default: ""
+      selector:
+        entity:
+          filter:
+            - integration: esphome
+              domain: sensor
+    remove_on_end:
+      name: Remove when the bans end
+      description: Off keeps the notification, marked as ended, until you dismiss it.
+      default: true
+      selector:
+        boolean:
+
+mode: restart
+
+triggers:
+  - trigger: state
+    id: lockout
+    entity_id: !input lockout
+  - trigger: state
+    entity_id: !input ban_list
+  - trigger: homeassistant
+    event: start
+
+variables:
+  lockout: !input lockout
+  ban_list: !input ban_list
+  last_event: !input last_event
+  remove_on_end: !input remove_on_end
+  nid: "irry_security_{{ lockout | replace('.', '_') }}"
+  ended: >-
+    {{ trigger.id == 'lockout'
+       and trigger.from_state is not none and trigger.from_state.state == 'on'
+       and trigger.to_state is not none and trigger.to_state.state == 'off' }}
+
+actions:
+  # The device publishes Lockout, Ban List and Last Event in the same second: wait for all three.
+  - delay:
+      seconds: 2
+  - variables:
+      dev: "{{ device_id(lockout) }}"
+      device: "{{ (device_attr(dev, 'name_by_user') or device_attr(dev, 'name') or lockout) if dev else lockout }}"
+      is_on: "{{ is_state(lockout, 'on') }}"
+      bans: "{{ states(ban_list) }}"
+      # "<seq> lock <role> <ip> <seconds>" is the latest ban; any other event gives no duration.
+      latest: >-
+        {%- set ev = (states(last_event) if last_event else '').split(' ') -%}
+        {%- if ev | count == 5 and ev[1] == 'lock' and ev[4] | int(0) > 0 -%}
+        {%- set s = ev[4] | int -%}
+        Latest ban: {{ ev[3] }} ({{ ev[2] }}) for {{ ((s // 60) ~ ' min' if s >= 60 else '') ~ (' ' if s >= 60 and s % 60 else '') ~ ((s % 60) ~ ' s' if s % 60 else '') }}.
+        {%- endif -%}
+  - choose:
+      - alias: Any address blocked
+        conditions:
+          - condition: template
+            value_template: "{{ is_on and bans not in ['none', 'unknown', 'unavailable', ''] }}"
+        sequence:
+          - action: persistent_notification.create
+            data:
+              notification_id: "{{ nid }}"
+              title: "{{ device }}: login blocked"
+              message: |-
+                After repeated wrong passwords the device is blocking:
+                {% for e in bans.split('; ') -%}
+                - {{ e | regex_replace('^(\\S+) \\+(\\d+)s$', '\\1 for \\2 s') }}
+                {% endfor %}
+                {% if latest %}{{ latest }}
+
+                {% endif %}Bans end by themselves (at most 15 minutes) or with "Unlock all" in the device's Security card.
+      - alias: Last ban ended
+        conditions:
+          - condition: template
+            value_template: "{{ ended or (not is_on and states(lockout) == 'off') }}"
+        sequence:
+          - if:
+              - condition: template
+                value_template: "{{ remove_on_end }}"
+            then:
+              - action: persistent_notification.dismiss
+                data:
+                  notification_id: "{{ nid }}"
+            else:
+              # Only on the change itself, so a restart of Home Assistant raises nothing new.
+              - if:
+                  - condition: template
+                    value_template: "{{ ended }}"
+                then:
+                  - action: persistent_notification.create
+                    data:
+                      notification_id: "{{ nid }}"
+                      title: "{{ device }}: login block ended"
+                      message: |-
+                        Every address is unblocked again ({{ now().strftime('%H:%M') }}).
+                        {{ latest }}

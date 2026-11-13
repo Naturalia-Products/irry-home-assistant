@@ -1,54 +1,65 @@
-// Fake hass for the tests: one ws device (x8: no buzzer entities), 7 zones, entity names as the firmware publishes them.
+// Fake hass for the tests: one ws device, entity names, attributes and example states from the shared fixture
+// entities.json (the firmware's own list), then the scenario states below.
 // getData[what] is the j of the "get" action; ws[] records the callWS messages.
-const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 'it', x8 = false, r8 } = {}) {
-  const names = {
-    binary_sensor: ['Rain Skip Active', 'Rain Value Valid', 'Time Valid', 'Valve Power', 'Weather Battery', 'Weather Water Leak', 'Wi-Fi Fallback Active',
-      'Wind Over Threshold'],
-    button: ['Close All Zone Valves', 'Find Device', 'Firmware Check', 'Firmware Install', 'Ignore Wind', 'Irrigation Calibrate', 'Restart'],
-    number: ['Aux Off Delay', 'Aux On Delay', 'Irrigation Reference ET0', 'Manual Max Duration', 'Rain Skip Threshold', 'Wind Gust Threshold', 'Wind Mean Threshold'],
-    select: ['Aux Mode', 'Firmware Update Mode', 'Irrigation Method', 'R8 Mode', 'Units'],
-    sensor: ['Irrigation ET0 Yesterday', 'Irrigation Factor', 'Rain Last 24h', 'Uptime', 'Weather Humidity', 'Weather Indoor Humidity',
-      'Weather Indoor Temperature', 'Weather Pressure', 'Weather Pressure Sea Level', 'Weather Rain Event', 'Weather Rain Rate',
-      'Weather Rain Today', 'Weather Solar Radiation', 'Weather Temperature', 'Weather UV Index', 'Weather Wind Direction',
-      'Weather Wind Gust', 'Weather Wind Speed', 'Wi-Fi Signal', 'Wind Mean 10 min', 'Latitude', 'Longitude', 'Altitude',
-      'Weather Soil Moisture 1', 'Weather Soil Moisture 2', 'Weather Soil Moisture 3', 'Weather Soil Moisture 4',
-      'Weather Lightning Distance', 'Weather Lightning Count', 'Weather PM2.5', 'Weather Days Used'],
-    switch: ['Aux', 'Programs Paused'],
-    text: ['Aux Label', 'Rain Attribute', 'Rain Entity', 'Sequence Order', 'Weather Prefix'],
-    text_sensor: ['Firmware Source', 'Firmware Update Status', 'IP Address', 'Irrigation Overlap Warning',
-      'Last Event', 'Next Irrigation', 'Time Source', 'Weather Data', 'Weather Feed', 'Weather Last Update', 'Wi-Fi Network',
-      'Wind Pause', 'Wind Resume', 'Zone Active', 'Wind Paused Zones', 'Wind Waiting Zones', 'Wind Skip At', 'Next Sheltered Start',
-      'Next Sheltered Zone', 'Blocked Controls', 'Position Source', 'Altitude Source', 'Time Zone', 'RTC', 'Firmware Last Check', 'Problems', 'Weather Fallback'],
-    time: [], date: [],
-  };
-  if (!x8) { names.select.push('Alarm Sound'); names.time.push('Quiet From', 'Quiet To'); names.button.push('Silence Alarm'); }
-  for (let n = 1; n <= 7; n++) names.text.push(`Zone ${n} Label`);
-  for (let n = 1; n <= zones; n++) {
-    const z = `Zone ${n}`;
-    names.switch.push(`${z} Manual`, `${z} Sheltered from Rain`, `${z} Sheltered from Wind`);
-    names.sensor.push(`${z} Irrigation Factor`);
-    names.select.push(`${z} Plant Type`);
-    names.text_sensor.push(`${z} End`, `${z} Next Start`);
-    for (let s = 1; s <= 3; s++) {
-      names.switch.push(`${z} S${s} Enable`, `${z} S${s} All Days`, ...['1-Mon', '2-Tue', '3-Wed', '4-Thu', '5-Fri', '6-Sat', '7-Sun'].map((d) => `${z} S${s} ${d}`));
-      names.number.push(`${z} S${s} Duration`, `${z} S${s} Every N Days`);
-      names.select.push(`${z} S${s} Days Mode`);
-      names.time.push(`${z} S${s} Start`);
-      names.date.push(`${z} S${s} Every N From`);
+const fs = require('fs'),
+  path = require('path');
+const FIX = fs.existsSync(path.join(__dirname, 'fixtures'))
+  ? path.join(__dirname, 'fixtures')
+  : path.join(__dirname, '..', '..', 'tests', 'fixtures');
+const ENT = JSON.parse(fs.readFileSync(path.join(FIX, 'entities.json'), 'utf8')).domains;
+const slug = (s) =>
+  s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+// ESPHome platform -> HA domain (datetime by its type).
+const domOf = (kind, e) =>
+  kind === 'text_sensor'
+    ? 'sensor'
+    : kind === 'datetime'
+      ? e.type === 'DATE'
+        ? 'date'
+        : 'time'
+      : kind;
+const ATTR = {
+  options: 'options',
+  unit_of_measurement: 'unit_of_measurement',
+  device_class: 'device_class',
+  min_value: 'min',
+  max_value: 'max',
+  step: 'step',
+};
+// dev / devName / mac / node: identity of the device (fakeMulti merges several); zones: the zones beyond it are left out
+// (their labels kept); noWeather drops the weather sensors.
+function fakeHass({
+  prefix = 'network_irry_the_seven_8dee48',
+  zones = 7,
+  lang = 'it',
+  r8,
+  dev = 'dev1',
+  devName = 'Irry The Seven 8dee48',
+  mac = 'aa:bb:cc:8d:ee:48',
+  node = 'it7ws_8dee48',
+  noWeather = false,
+} = {}) {
+  const entities = {},
+    states = {};
+  for (const [kind, list] of Object.entries(ENT))
+    for (const e of list) {
+      const zn = /^Zone (\d+) (.*)$/.exec(e.name);
+      if (zn && +zn[1] > zones && zn[2] !== 'Label') continue;
+      if (noWeather && kind === 'sensor' && e.name.startsWith('Weather ')) continue;
+      const id = `${domOf(kind, e)}.${prefix}_${slug(e.name)}`,
+        attributes = {};
+      for (const [k, a] of Object.entries(ATTR)) if (e[k] !== undefined) attributes[a] = e[k];
+      entities[id] = { entity_id: id, device_id: dev, name: e.name, platform: 'esphome' };
+      states[id] = { entity_id: id, state: e.example, attributes };
     }
-  }
-  const dom = { text_sensor: 'sensor', time: 'time', date: 'date' };
-  const entities = {}, states = {};
-  for (const [kind, list] of Object.entries(names)) for (const name of list) {
-    const id = `${dom[kind] || kind}.${prefix}_${slug(name)}`;
-    entities[id] = { entity_id: id, device_id: 'dev1', name, platform: 'esphome' };
-    states[id] = { entity_id: id, state: kind === 'text' ? '' : 'off', attributes: {} };
-  }
   const set = (name, state, attributes = {}) => {
     const id = Object.keys(entities).find((i) => entities[i].name === name);
+    if (!id && noWeather && name.startsWith('Weather ')) return;
     if (!id) throw new Error('no entity ' + name);
-    states[id] = { entity_id: id, state, attributes };
+    states[id] = { entity_id: id, state, attributes: { ...states[id].attributes, ...attributes } };
   };
   set('Zone 1 Label', 'Prato');
   set('Zone 2 Label', '');
@@ -60,22 +71,39 @@ function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 
   set('Zone 2 S1 Start', '06:10:00');
   set('Zone 2 S1 Duration', '15.0');
   set('Zone 2 S1 Enable', 'on');
-  set('Zone 1 S1 Days Mode', 'Weekdays', { options: ['Weekdays', 'Even days', 'Odd days', 'Every N days'] });
-  set('Zone 2 S1 Days Mode', 'Every N days', { options: ['Weekdays', 'Even days', 'Odd days', 'Every N days'] });
+  set('Zone 1 S1 Days Mode', 'Weekdays', {
+    options: ['Weekdays', 'Even days', 'Odd days', 'Every N days'],
+  });
+  set('Zone 2 S1 Days Mode', 'Every N days', {
+    options: ['Weekdays', 'Even days', 'Odd days', 'Every N days'],
+  });
   set('Zone 2 S1 Every N Days', '3.0');
   set('Zone 2 S1 Every N From', '2026-11-02');
   // Zone 3: even days 23:50 for 30 min (tail after midnight); zone 4: odd days 07:00 for 5 min.
   set('Zone 3 S1 Start', '23:50:00');
   set('Zone 3 S1 Duration', '30.0');
   set('Zone 3 S1 Enable', 'on');
-  set('Zone 3 S1 Days Mode', 'Even days', { options: ['Weekdays', 'Even days', 'Odd days', 'Every N days'] });
+  set('Zone 3 S1 Days Mode', 'Even days', {
+    options: ['Weekdays', 'Even days', 'Odd days', 'Every N days'],
+  });
   set('Zone 4 S1 Start', '07:00:00');
   set('Zone 4 S1 Duration', '5.0');
   set('Zone 4 S1 Enable', 'on');
-  set('Zone 4 S1 Days Mode', 'Odd days', { options: ['Weekdays', 'Even days', 'Odd days', 'Every N days'] });
+  set('Zone 4 S1 Days Mode', 'Odd days', {
+    options: ['Weekdays', 'Even days', 'Odd days', 'Every N days'],
+  });
   set('Units', 'Auto', { options: ['Auto', 'Metric', 'Imperial'] });
-  set('Zone 1 Plant Type', 'Cool-season lawn', { options: ['Cool-season lawn', 'Warm-season lawn', 'Beds, shrubs, hedges',
-    'Vegetable garden', 'Trees, orchard', 'Mediterranean, low water', 'Not adapted'] });
+  set('Zone 1 Plant Type', 'Cool-season lawn', {
+    options: [
+      'Cool-season lawn',
+      'Warm-season lawn',
+      'Beds, shrubs, hedges',
+      'Vegetable garden',
+      'Trees, orchard',
+      'Mediterranean, low water',
+      'Not adapted',
+    ],
+  });
   set('Aux Mode', 'Sync', { options: ['On', 'Off', 'Last', 'Sync'] });
   set('Weather Wind Speed', '12.6', { unit_of_measurement: 'km/h', device_class: 'wind_speed' });
   set('Wind Mean 10 min', '3.5', { unit_of_measurement: 'm/s' });
@@ -84,7 +112,7 @@ function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 
   set('Weather Temperature', '18.4', { unit_of_measurement: '°C' });
   set('Weather Pressure', '1013.2', { unit_of_measurement: 'hPa' });
   set('Irrigation Method', 'FAO-56', { options: ['None', 'Hargreaves', 'FAO-56'] });
-  set('Firmware Update Status', '2.4.1 available');
+  set('Firmware Update Status', '3.0.1 available');
   set('Last Event', 'Rapid S1: 3 zones');
   set('Next Irrigation', '2026-11-04T05:00:00+00:00');
   set('Zone Active', '-');
@@ -93,32 +121,88 @@ function fakeHass({ prefix = 'network_irry_the_seven_8dee48', zones = 7, lang = 
   set('Position Source', 'home_assistant');
   set('RTC', 'valid');
   set('Time Zone', 'Europe/Rome');
-  // Firmware 2.6.0: Problems '' = all OK; Zone N Next Start (timestamp) unknown = no start.
+  // Problems '' = all OK; Zone N Next Start (timestamp) unknown = no start.
   set('Problems', '');
-  // Firmware 2.7.0: the control rules of these states (Aux in Sync, nothing sounding, no zone, no wind pause).
+  // The control rules of these states (Aux in Sync, nothing sounding, no zone, no wind pause).
+  // Login limiter and HTTPS: one address banned for 60 s after a sixth wrong password.
+  set('Security Login Lockout', 'on');
+  set('Security Active Bans', '1');
+  set('Security Failed Logins', '6');
+  set('Security Last Event', '43 lock admin 192.168.1.23 60');
+  set('Security Ban List', '192.168.1.23 until 10:42');
+  set(
+    'TLS Key Fingerprint',
+    Array.from({ length: 32 }, (_, i) =>
+      (i * 7 + 16).toString(16).toUpperCase().padStart(2, '0'),
+    ).join(':'),
+  );
+  set(
+    'TLS Certificate Fingerprint',
+    Array.from({ length: 32 }, (_, i) =>
+      (i * 5 + 32).toString(16).toUpperCase().padStart(2, '0'),
+    ).join(':'),
+  );
   set('Blocked Controls', 'aux:aux_sync,silence:none,closeall:none,windign:nowind');
-  set('Weather Fallback', ''); set('Weather Days Used', '3');
+  set('Weather Fallback', '');
+  set('Weather Days Used', '3');
   for (let n = 1; n <= zones; n++) set(`Zone ${n} Next Start`, 'unknown');
-  if (r8) set('R8 Mode', r8, { options: ['Aux', 'Zone 7'] });
-  if (!x8) set('Alarm Sound', 'Quiet Hours', { options: ['Off', 'On', 'Quiet Hours'] });
+  // R8 Mode not published yet unless the test asks (the strategy then shows zone 7 and Aux, as the tests expect).
+  set('R8 Mode', r8 || 'unknown');
+  set('Alarm Sound', 'Quiet Hours', { options: ['Off', 'On', 'Quiet Hours'] });
   return {
-    language: lang, locale: { language: lang }, config: { time_zone: 'Europe/Rome' },
+    language: lang,
+    locale: { language: lang },
+    config: { time_zone: 'Europe/Rome' },
     devices: {
-      dev1: { id: 'dev1', name: 'Irry The Seven 8dee48', manufacturer: 'Irry', model: 'it7ws', sw_version: '2.5.0 (ESPHome 2026.10.0)', connections: [['mac', 'aa:bb:cc:8d:ee:48']] },
+      [dev]: {
+        id: dev,
+        name: devName,
+        manufacturer: 'Irry',
+        model: 'it7ws',
+        sw_version: '3.0.0 (ESPHome 2026.10.0)',
+        connections: [['mac', mac]],
+      },
       dev2: { id: 'dev2', name: 'Other', manufacturer: 'Espressif', model: 'x' },
     },
-    entities, states,
-    services: { esphome: { it7ws_8dee48_rapid: {}, it7ws_8dee48_set_slot: {}, it7ws_8dee48_get: {}, it7ws_8dee48_zone: {}, other_rapid: {} } },
-    calls: [], ws: [], getData: {},
-    callService(domain, service, data, target, notify = true) { this.calls.push({ domain, service, data, target, notify }); return this.fail ? Promise.reject(new Error(this.fail)) : Promise.resolve(); },
+    entities,
+    states,
+    services: {
+      esphome: {
+        [`${node}_rapid`]: {},
+        [`${node}_set_slot`]: {},
+        [`${node}_get`]: {},
+        [`${node}_zone`]: {},
+        other_rapid: {},
+      },
+    },
+    calls: [],
+    ws: [],
+    getData: {},
+    callService(domain, service, data, target, notify = true) {
+      this.calls.push({ domain, service, data, target, notify });
+      return this.fail ? Promise.reject(new Error(this.fail)) : Promise.resolve();
+    },
     // A service with return_response: { context, response: { j } }; getData keys "what/arg" or "what".
     callWS(q) {
       this.ws.push(q);
       if (q.type === 'lovelace/resources') return Promise.resolve(this.resources || []);
       if (q.type === 'history/history_during_period') return Promise.resolve(this.history || {});
-      const d = q.service_data || {}, j = this.getData[`${d.what}/${d.arg}`] ?? this.getData[d.what] ?? null;
+      const d = q.service_data || {},
+        j = this.getData[`${d.what}/${d.arg}`] ?? this.getData[d.what] ?? null;
       return Promise.resolve({ context: {}, response: { j } });
     },
   };
 }
-module.exports = { fakeHass };
+// Several Irry devices in one hass: fakeHass of each option set, registries and actions merged (the first is the base).
+function fakeMulti(list, common = {}) {
+  const hs = list.map((o) => fakeHass({ ...common, ...o })),
+    h = hs[0];
+  for (const x of hs.slice(1)) {
+    Object.assign(h.entities, x.entities);
+    Object.assign(h.states, x.states);
+    Object.assign(h.devices, x.devices);
+    Object.assign(h.services.esphome, x.services.esphome);
+  }
+  return h;
+}
+module.exports = { fakeHass, fakeMulti };
